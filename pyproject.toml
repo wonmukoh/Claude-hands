@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "claude-hands"
+version = "0.1.0"
+description = "Background-safe Windows application control (per-window, works minimized or occluded)"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = [
+    "comtypes>=1.4.1 ; sys_platform == 'win32'",
+    "pillow>=10.0.0",
+    "mcp>=1.2.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+claude-hands = "claude_hands.cli:main"
+claude-hands-mcp = "claude_hands.server:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
