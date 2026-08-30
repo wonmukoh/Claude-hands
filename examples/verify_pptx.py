@@ -26,7 +26,11 @@ from dataclasses import dataclass, field
 sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parents[1] / "src"))
 
 from claude_hands import attach, windows  # noqa: E402
-from claude_hands.win32.defs import IS_WINDOWS, ClaudeHandsError  # noqa: E402
+from claude_hands.win32.defs import (  # noqa: E402
+    IS_WINDOWS,
+    ClaudeHandsError,
+    force_utf8_output,
+)
 from claude_hands.win32.windows import (  # noqa: E402
     cursor_pos,
     foreground_hwnd,
@@ -256,6 +260,7 @@ def run(write: bool) -> int:
 
 
 def main() -> int:
+    force_utf8_output()
     parser = argparse.ArgumentParser(description="PowerPoint 로 claude-hands 실기검증")
     parser.add_argument(
         "--write",

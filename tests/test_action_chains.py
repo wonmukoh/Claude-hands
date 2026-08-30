@@ -561,3 +561,56 @@ def test_keys_repeat(rec):
     session = make_session({})
     actions.press_keys(session, "down", repeat=3)
     assert len(rec.keys) == 3
+
+
+# --------------------------------------------------------------------------
+# menu_select
+# --------------------------------------------------------------------------
+
+
+def menu_session(names):
+    nodes = {}
+    for index, name in enumerate(names, start=1):
+        node = NodeInfo(role="menuitem", name=name, patterns=("expandcollapse", "invoke"),
+                        rect=Rect(0, index * 20, 80, index * 20 + 20))
+        nodes[f"e{index}"] = (node, FakeElement(node, {
+            "expandcollapse": FakePattern(CurrentExpandCollapseState=0),
+            "invoke": FakePattern(),
+        }))
+    session = make_session(nodes)
+
+    def find(query, **kwargs):
+        return [(1.0, n) for n, _e in nodes.values() if query in n.name]
+
+    session.find = find
+    return session, nodes
+
+
+def test_single_step_menu_path_does_not_crash(rec):
+    """A one-level path never enters the expand branch; the result must still build."""
+
+    session, _nodes = menu_session(["저장"])
+
+    result = actions.menu_select(session, "저장")
+
+    assert result.ok
+    assert result.target == "저장"
+    assert result.strategy.endswith(":menu")
+
+
+def test_multi_step_menu_expands_then_invokes(rec):
+    session, nodes = menu_session(["파일", "다른 이름으로 저장"])
+
+    result = actions.menu_select(session, "파일 > 다른 이름으로 저장")
+
+    assert result.ok and result.target == "파일 > 다른 이름으로 저장"
+    file_expand = nodes["e1"][1].patterns["expandcollapse"]
+    assert file_expand.calls == [("Expand",)]          # 상위 메뉴는 펼치고
+    assert nodes["e2"][1].patterns["invoke"].calls == [("Invoke",)]  # 말단은 실행
+
+
+def test_menu_reports_a_missing_step_with_the_path_so_far(rec):
+    session, _nodes = menu_session(["파일"])
+
+    with pytest.raises(ActionFailedError, match="없는메뉴"):
+        actions.menu_select(session, "파일 > 없는메뉴")

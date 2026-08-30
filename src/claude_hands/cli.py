@@ -14,7 +14,7 @@ from typing import Optional
 
 from .api import attach, windows as list_all_windows
 from .elements import format_node_line
-from .win32.defs import IS_WINDOWS, ClaudeHandsError
+from .win32.defs import IS_WINDOWS, ClaudeHandsError, force_utf8_output
 
 
 def _attach(args):
@@ -23,6 +23,7 @@ def _attach(args):
         title=args.title,
         process=args.process,
         pid=args.pid,
+        engine=getattr(args, "engine", "auto"),
     )
 
 
@@ -229,6 +230,12 @@ def _add_target_args(parser: argparse.ArgumentParser) -> None:
     group.add_argument("--title", help="창 제목 일부")
     group.add_argument("--process", help="실행 파일 이름 일부")
     group.add_argument("--pid", type=int, help="프로세스 ID")
+    group.add_argument(
+        "--engine",
+        default="auto",
+        choices=["auto", "uia", "win32"],
+        help="조작 엔진 (기본 auto: UIA 우선, 불가하면 창 메시지)",
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -326,6 +333,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Optional[list[str]] = None) -> int:
+    force_utf8_output()
     parser = build_parser()
     args = parser.parse_args(argv)
     try:

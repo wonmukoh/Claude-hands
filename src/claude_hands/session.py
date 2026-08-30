@@ -58,10 +58,13 @@ class WindowSession:
 
     hwnd: int
     info: WindowInfo
+    engine: str = "auto"
     tree: Optional[NodeInfo] = None
     refs: dict[str, NodeInfo] = field(default_factory=dict)
     elements: dict[int, object] = field(default_factory=dict)  # id(node) -> UiaElement
     taken_at: float = 0.0
+    active_engine: str = ""
+    engine_note: str = ""
     _lock: threading.RLock = field(default_factory=threading.RLock, repr=False)
 
     # -- lifecycle --------------------------------------------------------
@@ -79,18 +82,10 @@ class WindowSession:
     def capture_tree(self, options: SnapshotOptions | None = None) -> NodeInfo:
         """Rebuild the UI tree for this window and re-issue refs."""
 
-        from .uia.core import build_tree, element_from_hwnd
-
         options = options or SnapshotOptions()
         with self._lock:
             self.ensure_alive()
-            root_element = element_from_hwnd(self.hwnd)
-            tree, index = build_tree(
-                root_element,
-                max_depth=options.max_depth,
-                max_children=options.max_children,
-                max_nodes=options.max_nodes,
-            )
+            tree, index = self._build_tree(options)
             pruned = prune(tree, keep_offscreen=options.keep_offscreen) or tree
             pruned = collapse_chains(pruned)
             self.tree = pruned
@@ -114,13 +109,55 @@ class WindowSession:
             body = render_tree(tree, max_lines=options.max_lines, show_rect=options.show_rect)
         return f"{header}\n{body}"
 
+    def _build_tree(self, options: SnapshotOptions):
+        """Build the tree with the chosen engine, falling back when asked to.
+
+        ``auto`` prefers UI Automation and drops to the window-message backend
+        only if UIA cannot start at all — a locked-down box, an unloadable type
+        library. The fallback sees fewer elements, so the choice is recorded and
+        reported rather than hidden.
+        """
+
+        from .win32.controls import build_win32_tree
+
+        if self.engine == "win32":
+            self.active_engine = "win32"
+            return build_win32_tree(
+                self.hwnd, max_depth=options.max_depth, max_nodes=options.max_nodes
+            )
+
+        from .uia.core import UiaUnavailableError, build_tree, element_from_hwnd
+
+        try:
+            root_element = element_from_hwnd(self.hwnd)
+            result = build_tree(
+                root_element,
+                max_depth=options.max_depth,
+                max_children=options.max_children,
+                max_nodes=options.max_nodes,
+            )
+            self.active_engine = "uia"
+            return result
+        except UiaUnavailableError:
+            if self.engine != "auto":
+                raise
+            self.engine_note = "UI Automation 을 쓸 수 없어 창 메시지 엔진으로 전환했습니다."
+            self.active_engine = "win32"
+            return build_win32_tree(
+                self.hwnd, max_depth=options.max_depth, max_nodes=options.max_nodes
+            )
+
     def _header(self) -> str:
         info = self.refresh_info()
-        return (
+        header = (
             f"창: {info.title or '(제목 없음)'} | {info.process} (pid {info.pid}) "
             f"| hwnd={info.hwnd} | 상태={info.state} "
             f"| 위치 {info.rect.left},{info.rect.top} {info.rect.width}x{info.rect.height}"
+            f" | 엔진={self.active_engine or self.engine}"
         )
+        if self.engine_note:
+            header += f"\n주의: {self.engine_note}"
+        return header
 
     # -- refs -------------------------------------------------------------
     def _fingerprint(self, node: NodeInfo) -> tuple:
@@ -233,17 +270,21 @@ class SessionManager:
         process: str | None = None,
         pid: int | None = None,
         exact_title: bool = False,
+        engine: str = "auto",
     ) -> WindowSession:
+        if engine not in {"auto", "uia", "win32"}:
+            raise ClaudeHandsError(f"engine 은 auto/uia/win32 중 하나여야 합니다: {engine!r}")
         info = find_window(
             hwnd=hwnd, title=title, process=process, pid=pid, exact_title=exact_title
         )
         with self._lock:
             session = self._sessions.get(info.hwnd)
             if session is None:
-                session = WindowSession(hwnd=info.hwnd, info=info)
+                session = WindowSession(hwnd=info.hwnd, info=info, engine=engine)
                 self._sessions[info.hwnd] = session
             else:
                 session.info = info
+                session.engine = engine
             self._current = info.hwnd
             return session
 

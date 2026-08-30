@@ -148,12 +148,13 @@ def click(
                 attempts[-1] = f"{strategy}(실패: {_short(exc)})"
 
     if button == "right" and not force_message:
-        attempts.append("uia:context-menu")
+        context_label = f"{_engine(element)}:context-menu"
+        attempts.append(context_label)
         try:
             _uia(lambda: _show_context_menu(element))
-            return ActionResult(True, "click", "uia:context-menu", label, attempts=attempts)
+            return ActionResult(True, "click", context_label, label, attempts=attempts)
         except Exception as exc:  # noqa: BLE001
-            attempts[-1] = f"uia:context-menu(실패: {_short(exc)})"
+            attempts[-1] = f"{context_label}(실패: {_short(exc)})"
 
     # Message-based click at the element's centre.
     attempts.append("message:click")
@@ -179,39 +180,52 @@ def click(
     )
 
 
+def _engine(element) -> str:
+    """Which backend this element came from — reported so results never lie."""
+
+    return getattr(element, "engine", "uia")
+
+
+def _session_engine(session: WindowSession) -> str:
+    """The engine a session last used, for results not tied to one element."""
+
+    return getattr(session, "active_engine", "") or getattr(session, "engine", "uia")
+
+
 def _click_pattern_chain(element, node: NodeInfo):
     """Yield ``(name, callable)`` click strategies best-first for this element."""
 
     chain: list[tuple[str, Any]] = []
+    engine = _engine(element)
 
     if node.role in {"checkbox", "radiobutton"} or (
         node.toggle_state is not None and node.role not in {"button", "splitbutton", "menuitem"}
     ):
         toggle = element.pattern("toggle")
         if toggle is not None:
-            chain.append(("uia:toggle", lambda: toggle.Toggle()))
+            chain.append((f"{engine}:toggle", lambda: toggle.Toggle()))
 
     if node.role in {"listitem", "treeitem", "tabitem", "dataitem"}:
         selection = element.pattern("selectionitem")
         if selection is not None:
-            chain.append(("uia:select", lambda: selection.Select()))
+            chain.append((f"{engine}:select", lambda: selection.Select()))
 
     invoke = element.pattern("invoke")
     if invoke is not None:
-        chain.append(("uia:invoke", lambda: invoke.Invoke()))
+        chain.append((f"{engine}:invoke", lambda: invoke.Invoke()))
 
     if node.role in {"combobox", "menuitem", "treeitem", "splitbutton"}:
         expand = element.pattern("expandcollapse")
         if expand is not None:
-            chain.append(("uia:expand", lambda: _toggle_expand(expand)))
+            chain.append((f"{engine}:expand", lambda: _toggle_expand(expand)))
 
     selection = element.pattern("selectionitem")
     if selection is not None and not any(name == "uia:select" for name, _ in chain):
-        chain.append(("uia:select", lambda: selection.Select()))
+        chain.append((f"{engine}:select", lambda: selection.Select()))
 
     legacy = element.pattern("legacy")
     if legacy is not None:
-        chain.append(("uia:legacy-default-action", lambda: legacy.DoDefaultAction()))
+        chain.append((f"{engine}:legacy-default-action", lambda: legacy.DoDefaultAction()))
 
     return chain
 
@@ -268,9 +282,11 @@ def type_text(
     if not node.enabled:
         raise ActionFailedError(f"{label} 은(는) 비활성 상태라 입력할 수 없습니다.")
 
+    engine = _engine(element)
     value_pattern = element.pattern("value")
     if value_pattern is not None:
-        attempts.append("uia:value.SetValue")
+        set_value_label = f"{engine}:value.SetValue"
+        attempts.append(set_value_label)
         try:
             is_readonly = False
             try:
@@ -284,26 +300,27 @@ def type_text(
             if submit:
                 send_keys(_owning_hwnd(session, node), "enter")
             return ActionResult(
-                True, "type", "uia:value.SetValue", label,
+                True, "type", set_value_label, label,
                 detail=f"{len(new_text)}자 입력", attempts=attempts,
             )
         except Exception as exc:  # noqa: BLE001
-            attempts[-1] = f"uia:value.SetValue(실패: {_short(exc)})"
+            attempts[-1] = f"{set_value_label}(실패: {_short(exc)})"
 
     legacy = element.pattern("legacy")
     if legacy is not None:
-        attempts.append("uia:legacy.SetValue")
+        legacy_label = f"{engine}:legacy.SetValue"
+        attempts.append(legacy_label)
         try:
             new_text = text if clear else (node.value or "") + text
             _uia(lambda: legacy.SetValue(new_text))
             if submit:
                 send_keys(_owning_hwnd(session, node), "enter")
             return ActionResult(
-                True, "type", "uia:legacy.SetValue", label,
+                True, "type", legacy_label, label,
                 detail=f"{len(new_text)}자 입력", attempts=attempts,
             )
         except Exception as exc:  # noqa: BLE001
-            attempts[-1] = f"uia:legacy.SetValue(실패: {_short(exc)})"
+            attempts[-1] = f"{legacy_label}(실패: {_short(exc)})"
 
     hwnd = node.hwnd
     if hwnd and clear:
@@ -358,7 +375,7 @@ def set_value(session: WindowSession, ref: str, value: str | float) -> ActionRes
     if range_pattern is not None:
         try:
             _uia(lambda: range_pattern.SetValue(float(value)))
-            return ActionResult(True, "set_value", "uia:rangevalue", label, detail=str(value))
+            return ActionResult(True, "set_value", f"{_engine(element)}:rangevalue", label, detail=str(value))
         except Exception as exc:  # noqa: BLE001
             raise ActionFailedError(f"{label} 값 설정 실패: {_short(exc)}") from exc
 
@@ -405,7 +422,7 @@ def focus(session: WindowSession, ref: str) -> ActionResult:
     label = _target_label(node)
     try:
         _uia(lambda: element.com.SetFocus())
-        return ActionResult(True, "focus", "uia:SetFocus", label)
+        return ActionResult(True, "focus", f"{_engine(element)}:SetFocus", label)
     except Exception as exc:  # noqa: BLE001
         raise ActionFailedError(f"{label} 에 포커스를 줄 수 없습니다: {_short(exc)}") from exc
 
@@ -448,7 +465,7 @@ def scroll(
 
         module, _ = get_automation()
         axis, sign = _SCROLL_AMOUNTS[direction]
-        attempts.append("uia:scroll")
+        attempts.append(f"{_engine(element)}:scroll")
         try:
             if to_percent is not None:
                 percent = max(0.0, min(100.0, float(to_percent)))
@@ -457,7 +474,7 @@ def scroll(
                 vertical = percent if axis == "vertical" else no_scroll
                 _uia(lambda: pattern.SetScrollPercent(horizontal, vertical))
                 return ActionResult(
-                    True, "scroll", "uia:scroll", label, detail=f"{axis} {percent}%", attempts=attempts
+                    True, "scroll", f"{_engine(element)}:scroll", label, detail=f"{axis} {percent}%", attempts=attempts
                 )
             small_inc = getattr(module, "ScrollAmount_SmallIncrement", 4)
             small_dec = getattr(module, "ScrollAmount_SmallDecrement", 1)
@@ -468,7 +485,7 @@ def scroll(
             for _ in range(max(1, amount)):
                 _uia(lambda: pattern.Scroll(horizontal, vertical))
             return ActionResult(
-                True, "scroll", "uia:scroll", label,
+                True, "scroll", f"{_engine(element)}:scroll", label,
                 detail=f"{direction} × {amount}", attempts=attempts,
             )
         except Exception as exc:  # noqa: BLE001
@@ -519,7 +536,7 @@ def scroll_into_view(session: WindowSession, ref: str, *, quiet: bool = False) -
         if pattern is None:
             return None
         _uia(lambda: pattern.ScrollIntoView())
-        return ActionResult(True, "scroll_into_view", "uia:scrollitem", _target_label(node))
+        return ActionResult(True, "scroll_into_view", f"{_engine(element)}:scrollitem", _target_label(node))
     except Exception:  # noqa: BLE001 - purely an optimisation
         if quiet:
             return None
@@ -539,7 +556,7 @@ def select(session: WindowSession, ref: str, *, add: bool = False) -> ActionResu
         return click(session, ref)
     try:
         _uia(lambda: pattern.AddToSelection() if add else pattern.Select())
-        return ActionResult(True, "select", "uia:selectionitem", label)
+        return ActionResult(True, "select", f"{_engine(element)}:selectionitem", label)
     except Exception as exc:  # noqa: BLE001
         raise ActionFailedError(f"{label} 선택 실패: {_short(exc)}") from exc
 
@@ -568,7 +585,7 @@ def toggle(session: WindowSession, ref: str, *, to: bool | None = None) -> Actio
         from .uia.core import TOGGLE_STATES
 
         return ActionResult(
-            True, "toggle", "uia:toggle", label, detail=f"현재 상태: {TOGGLE_STATES.get(state, state)}"
+            True, "toggle", f"{_engine(element)}:toggle", label, detail=f"현재 상태: {TOGGLE_STATES.get(state, state)}"
         )
     except Exception as exc:  # noqa: BLE001
         raise ActionFailedError(f"{label} 토글 실패: {_short(exc)}") from exc
@@ -583,7 +600,7 @@ def expand(session: WindowSession, ref: str, *, collapse: bool = False) -> Actio
     try:
         _uia(lambda: pattern.Collapse() if collapse else pattern.Expand())
         return ActionResult(
-            True, "collapse" if collapse else "expand", "uia:expandcollapse", label
+            True, "collapse" if collapse else "expand", f"{_engine(element)}:expandcollapse", label
         )
     except Exception as exc:  # noqa: BLE001
         raise ActionFailedError(f"{label} {'접기' if collapse else '펼치기'} 실패: {_short(exc)}") from exc
@@ -716,4 +733,4 @@ def menu_select(session: WindowSession, path: str, *, separator: str = ">") -> A
             time.sleep(0.25)
         walked.append(step)
 
-    return ActionResult(True, "menu_select", "uia:menu", " > ".join(walked))
+    return ActionResult(True, "menu_select", f"{_session_engine(session)}:menu", " > ".join(walked))

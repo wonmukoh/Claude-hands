@@ -62,6 +62,12 @@ class Window:
     def info(self) -> WindowInfo:
         return self._session.refresh_info()
 
+    @property
+    def engine(self) -> str:
+        """Which backend actually served the last snapshot."""
+
+        return self._session.active_engine or self._session.engine
+
     def __repr__(self) -> str:  # pragma: no cover - debugging aid
         return f"<Window hwnd={self.hwnd} {self._session.info.title!r}>"
 
@@ -175,11 +181,19 @@ def attach(
     process: str | None = None,
     pid: int | None = None,
     exact_title: bool = False,
+    engine: str = "auto",
 ) -> Window:
-    """Attach to one window and return a :class:`Window` handle."""
+    """Attach to one window and return a :class:`Window` handle.
+
+    ``engine`` picks the backend: ``"uia"`` (UI Automation — richer, the
+    default preference), ``"win32"`` (window messages only — sees just real
+    HWND controls, but needs no COM), or ``"auto"`` to prefer UIA and drop to
+    win32 if UIA cannot start.
+    """
 
     session = _manager.attach(
-        hwnd=hwnd, title=title, process=process, pid=pid, exact_title=exact_title
+        hwnd=hwnd, title=title, process=process, pid=pid,
+        exact_title=exact_title, engine=engine,
     )
     return Window(session)
 

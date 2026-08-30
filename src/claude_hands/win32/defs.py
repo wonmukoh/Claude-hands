@@ -122,6 +122,29 @@ MK_MBUTTON = 0x0010
 
 WHEEL_DELTA = 120
 
+# Button / Edit control messages
+BM_GETCHECK = 0x00F0
+BM_SETCHECK = 0x00F1
+BM_CLICK = 0x00F5
+EM_SETSEL = 0x00B1
+EM_REPLACESEL = 0x00C2
+EM_GETLINECOUNT = 0x00BA
+CB_GETCURSEL = 0x0147
+CB_GETLBTEXT = 0x0148
+CB_GETCOUNT = 0x0146
+
+# Button styles (GetWindowLong(GWL_STYLE) & BS_TYPEMASK)
+BS_TYPEMASK = 0x0000000F
+BS_PUSHBUTTON = 0
+BS_DEFPUSHBUTTON = 1
+BS_CHECKBOX = 2
+BS_AUTOCHECKBOX = 3
+BS_RADIOBUTTON = 4
+BS_3STATE = 5
+BS_AUTO3STATE = 6
+BS_GROUPBOX = 7
+BS_AUTORADIOBUTTON = 9
+
 # ChildWindowFromPointEx
 CWP_ALL = 0x0000
 CWP_SKIPINVISIBLE = 0x0001
@@ -268,6 +291,9 @@ if IS_WINDOWS:  # pragma: no cover - Windows only
 
     user32.GetAncestor.argtypes = [wintypes.HWND, ctypes.c_uint]
     user32.GetAncestor.restype = wintypes.HWND
+
+    user32.SetFocus.argtypes = [wintypes.HWND]
+    user32.SetFocus.restype = wintypes.HWND
 
     user32.GetForegroundWindow.argtypes = []
     user32.GetForegroundWindow.restype = wintypes.HWND
@@ -448,6 +474,26 @@ def enable_dpi_awareness() -> str:
         return "system"
     except (AttributeError, OSError):
         return "unavailable"
+
+
+def force_utf8_output() -> None:
+    """Make stdout/stderr survive non-ASCII text on a Windows console.
+
+    A Windows console defaults to a legacy code page (cp1252 in the US,
+    cp949 in Korea), and redirecting to a pipe or file picks one too. Printing
+    Hangul — which this tool does constantly — then dies with
+    UnicodeEncodeError before the user sees a single line.
+    """
+
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        try:
+            reconfigure(encoding="utf-8", errors="replace")
+        except (ValueError, OSError):
+            # Already detached, or a stream that cannot be reconfigured.
+            continue
 
 
 def make_lparam(low: int, high: int) -> int:

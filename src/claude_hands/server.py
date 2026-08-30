@@ -19,7 +19,7 @@ from .api import manager, windows as _list_windows
 from .elements import format_node_line
 from .session import SnapshotOptions, WindowSession
 from .win32.capture import capture_window
-from .win32.defs import IS_WINDOWS, ClaudeHandsError
+from .win32.defs import IS_WINDOWS, ClaudeHandsError, force_utf8_output
 from .win32.windows import (
     close_window,
     describe_window,
@@ -566,6 +566,7 @@ async def control_window(action: str, hwnd: int | None = None, x: int = 0, y: in
 
 
 def main(argv: list[str] | None = None) -> int:
+    force_utf8_output()
     parser = argparse.ArgumentParser(
         prog="claude-hands-mcp",
         description="claude-hands MCP 서버 (Windows 프로그램 조작)",

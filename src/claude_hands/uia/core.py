@@ -12,6 +12,7 @@ about apartments.
 
 from __future__ import annotations
 
+import os
 import queue
 import re
 import sys
@@ -168,6 +169,43 @@ TOGGLE_STATES = {0: "off", 1: "on", 2: "indeterminate"}
 EXPAND_STATES = {0: "collapsed", 1: "expanded", 2: "partially-expanded", 3: "leaf"}
 
 
+CLSID_CUIAUTOMATION = "{ff48dba4-60ef-4201-aa87-54103eef594e}"
+
+
+def _describe_exception(exc: BaseException) -> str:
+    """Some COM/codegen failures stringify to nothing; never report an empty reason."""
+
+    text = " ".join(str(exc).split())
+    return text or f"{type(exc).__name__} (상세 메시지 없음)"
+
+
+def _create_by_clsid(module: Any, failures: list[str]) -> Any:  # pragma: no cover - Windows only
+    """Create CUIAutomation straight from its CLSID when no coclass is exposed."""
+
+    try:
+        import ctypes
+
+        import comtypes
+
+        interface = getattr(module, "IUIAutomation", None)
+        if interface is None:
+            failures.append("IUIAutomation 인터페이스가 타입 라이브러리에 없음")
+            return None
+        clsid = comtypes.GUID(CLSID_CUIAUTOMATION)
+        unknown = ctypes.POINTER(comtypes.IUnknown)()
+        ctypes.oledll.ole32.CoCreateInstance(
+            ctypes.byref(clsid),
+            None,
+            1,  # CLSCTX_INPROC_SERVER
+            ctypes.byref(comtypes.IUnknown._iid_),
+            ctypes.byref(unknown),
+        )
+        return unknown.QueryInterface(interface)
+    except Exception as exc:  # noqa: BLE001 - last resort
+        failures.append(f"CoCreateInstance(CLSID): {_describe_exception(exc)}")
+        return None
+
+
 def _load() -> tuple[Any, Any]:  # pragma: no cover - Windows only
     """Import the generated UIAutomationCore wrapper and create IUIAutomation."""
 
@@ -187,29 +225,63 @@ def _load() -> tuple[Any, Any]:  # pragma: no cover - Windows only
             "comtypes 가 설치되어 있지 않습니다. `pip install comtypes` 후 다시 시도하세요."
         ) from exc
 
-    try:
-        module = comtypes.client.GetModule("UIAutomationCore.dll")
-    except Exception as exc:  # noqa: BLE001 - any COM/codegen failure
+    system32 = os.path.join(
+        os.environ.get("SystemRoot", r"C:\\Windows"), "System32", "UIAutomationCore.dll"
+    )
+    module = None
+    failures: list[str] = []
+    # The bare name is the documented form, but it fails on installs where
+    # comtypes cannot resolve it to a path it can stat; the absolute path and
+    # the registered typelib GUID are the ways back in.
+    for label, source in (
+        ("UIAutomationCore.dll", "UIAutomationCore.dll"),
+        (system32, system32),
+        ("typelib GUID", ("{944DE083-8FB8-45CF-BCB7-C477ACB2F897}", 1, 0)),
+    ):
+        try:
+            module = comtypes.client.GetModule(source)
+            break
+        except Exception as exc:  # noqa: BLE001 - any COM/codegen failure
+            failures.append(f"{label}: {_describe_exception(exc)}")
+    if module is None:
         raise UiaUnavailableError(
-            "UIAutomationCore.dll 타입 라이브러리를 불러오지 못했습니다: "
-            f"{exc}. comtypes 캐시 디렉터리에 쓰기 권한이 있는지 확인하세요."
-        ) from exc
+            "UIAutomationCore 타입 라이브러리를 불러오지 못했습니다.\n  "
+            + "\n  ".join(failures)
+            + "\ncomtypes 캐시 디렉터리에 쓰기 권한이 있는지 확인하세요. "
+            "Wine 처럼 UIA 클라이언트 타입 라이브러리가 없는 환경이라면 "
+            "engine='win32' 로 창 메시지 기반 폴백 엔진을 쓰세요."
+        )
+    if not hasattr(module, "IUIAutomationElement"):
+        raise UiaUnavailableError(
+            f"불러온 타입 라이브러리({module.__name__})에 UIA 클라이언트 인터페이스가 "
+            "없습니다. Wine 은 공급자 측 전용 타입 라이브러리만 제공하므로 UIA 엔진을 쓸 수 "
+            "없습니다. engine='win32' 로 창 메시지 기반 폴백 엔진을 쓰세요."
+        )
 
     instance = None
+    creation_failures: list[str] = []
     for coclass, interface in (
         ("CUIAutomation8", "IUIAutomation6"),
         ("CUIAutomation8", "IUIAutomation2"),
         ("CUIAutomation", "IUIAutomation"),
     ):
+        if not hasattr(module, coclass) or not hasattr(module, interface):
+            continue
         try:
             instance = comtypes.client.CreateObject(
                 getattr(module, coclass), interface=getattr(module, interface)
             )
             break
-        except Exception:  # noqa: BLE001 - try the next combination
-            continue
+        except Exception as exc:  # noqa: BLE001 - try the next combination
+            creation_failures.append(f"{coclass}/{interface}: {_describe_exception(exc)}")
     if instance is None:
-        raise UiaUnavailableError("IUIAutomation 인스턴스를 생성하지 못했습니다.")
+        # Some type libraries describe the interfaces but omit the coclasses.
+        instance = _create_by_clsid(module, creation_failures)
+    if instance is None:
+        raise UiaUnavailableError(
+            "IUIAutomation 인스턴스를 생성하지 못했습니다.\n  "
+            + "\n  ".join(creation_failures or ["(원인 불명)"])
+        )
 
     if not CONTROL_TYPE_NAMES:
         for attribute in dir(module):

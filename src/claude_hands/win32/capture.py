@@ -29,7 +29,9 @@ from .windows import (
     Rect,
     get_placement,
     is_minimized,
+    minimize,
     move_window,
+    send_to_bottom,
     set_placement,
     show_without_activating,
     virtual_screen_rect,
@@ -50,6 +52,7 @@ class Capture:
     pixels: bytes  # BGRA, top-down
     rect: Rect
     restored_offscreen: bool = False
+    blank: bool = False
 
     def to_image(self):
         from PIL import Image
@@ -97,6 +100,7 @@ class Capture:
                 self.rect.top + bottom,
             ),
             restored_offscreen=self.restored_offscreen,
+            blank=self.blank,
         )
 
 
@@ -200,23 +204,58 @@ def capture_window(
             "restore_if_minimized=True 로 호출하거나, 화면 대신 snapshot(UI 트리)을 쓰세요."
         )
 
-    # --- minimised: restore off the visible desktop, capture, put back -----
+    # --- minimised: no pixels exist, so the window has to come back briefly ---
+    #
+    # It is restored *without activation* and pushed to the bottom of the
+    # z-order, so it never takes focus and never covers what the user is doing.
+    # Its size is never touched: a window's own restored geometry is measured
+    # after it comes back and put back exactly, because the placement struct's
+    # rcNormalPosition cannot be trusted while a window is minimised on every
+    # platform.
     placement = get_placement(hwnd)
-    saved = placement.rcNormalPosition
-    width = max(320, saved.right - saved.left)
-    height = max(240, saved.bottom - saved.top)
-    virtual = virtual_screen_rect()
-    park_x = virtual.right + 64  # far right of every monitor: never visible
-    park_y = virtual.top
-
+    restored_rect = None
+    parked = False
     try:
-        move_window(hwnd, park_x, park_y, width, height)
         show_without_activating(hwnd)
-        move_window(hwnd, park_x, park_y, width, height)
+        send_to_bottom(hwnd)
         time.sleep(settle_seconds)
+        restored_rect = window_rect(hwnd, frame_bounds=False)
+
         rect = window_rect(hwnd)
         pixels = _grab(hwnd, rect, use_bitblt=False)
-        return Capture(rect.width, rect.height, pixels, rect, restored_offscreen=True)
+
+        if _blank_ratio(pixels) > 0.98:
+            # Some compositors will not render a window sitting at the bottom
+            # of the z-order. Moving it off the desktop — position only, never
+            # size — gives a second chance.
+            virtual = virtual_screen_rect()
+            move_window(hwnd, virtual.right + 64, virtual.top)
+            parked = True
+            time.sleep(settle_seconds)
+            retry_rect = window_rect(hwnd)
+            retry_pixels = _grab(hwnd, retry_rect, use_bitblt=False)
+            if _blank_ratio(retry_pixels) <= 0.98:
+                rect, pixels = retry_rect, retry_pixels
+
+        return Capture(
+            rect.width,
+            rect.height,
+            pixels,
+            rect,
+            restored_offscreen=True,
+            blank=_blank_ratio(pixels) > 0.98,
+        )
     finally:
-        # Always put the window back exactly where the user left it.
-        set_placement(hwnd, placement)
+        # Put the window back exactly: original position first (size was never
+        # changed), then the minimised state it was found in.
+        if parked and restored_rect is not None:
+            try:
+                move_window(hwnd, restored_rect.left, restored_rect.top)
+            except ClaudeHandsError:
+                pass
+        try:
+            set_placement(hwnd, placement)
+        except ClaudeHandsError:
+            pass
+        if not is_minimized(hwnd):
+            minimize(hwnd)

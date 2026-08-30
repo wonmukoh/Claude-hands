@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from typing import Callable, Iterator
 
 from .defs import (
+    HWND_BOTTOM,
     IS_WINDOWS,
     ClaudeHandsError,
     DWMWA_CLOAKED,
@@ -23,6 +24,7 @@ from .defs import (
     SW_SHOWMAXIMIZED,
     SW_SHOWNOACTIVATE,
     SWP_NOACTIVATE,
+    SWP_NOMOVE,
     SWP_NOOWNERZORDER,
     SWP_NOSIZE,
     SWP_NOZORDER,
@@ -440,6 +442,18 @@ def move_window(
         width = height = 0
     if not user32.SetWindowPos(hwnd, 0, x, y, width, height, flags):
         raise ClaudeHandsError(f"SetWindowPos failed for hwnd={hwnd}")
+
+
+def send_to_bottom(hwnd: int) -> None:
+    """Push a window behind every other window without activating it."""
+
+    require_windows()
+    from .defs import user32
+
+    user32.SetWindowPos(
+        hwnd, HWND_BOTTOM, 0, 0, 0, 0,
+        SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE | SWP_NOOWNERZORDER,
+    )
 
 
 def close_window(hwnd: int) -> None:
