@@ -7,7 +7,17 @@ movement, no focus changes, no foreground activation. The window can sit
 minimised behind everything else and still be read and driven.
 """
 
-from .api import (  # noqa: F401
+from .win32.defs import enable_dpi_awareness as _enable_dpi_awareness
+
+# Must happen before anything reads a coordinate. Windows hands a DPI-unaware
+# process *virtualised* coordinates — on a 200% display GetCursorPos and
+# GetWindowRect come back at half the real values — and switching awareness
+# mid-run silently changes the coordinate system underneath every rect and
+# point already measured. Doing it at import means one coordinate space for
+# the life of the process.
+DPI_AWARENESS = _enable_dpi_awareness()
+
+from .api import (  # noqa: F401,E402
     Window,
     attach,
     attached,
@@ -16,9 +26,9 @@ from .api import (  # noqa: F401
     window_info,
     windows,
 )
-from .elements import NodeInfo  # noqa: F401
-from .win32.defs import ClaudeHandsError, NotOnWindowsError  # noqa: F401
-from .win32.windows import (  # noqa: F401
+from .elements import NodeInfo  # noqa: F401,E402
+from .win32.defs import ClaudeHandsError, NotOnWindowsError  # noqa: F401,E402
+from .win32.windows import (  # noqa: F401,E402
     AmbiguousWindowError,
     WindowInfo,
     WindowNotFoundError,
@@ -40,5 +50,6 @@ __all__ = [
     "NotOnWindowsError",
     "WindowNotFoundError",
     "AmbiguousWindowError",
+    "DPI_AWARENESS",
     "__version__",
 ]

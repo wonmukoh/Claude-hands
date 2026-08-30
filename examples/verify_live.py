@@ -50,19 +50,35 @@ class Report:
         self.checks: list[Check] = []
         self.cursor_at_start = cursor_pos()
         self.foreground_at_start = foreground_hwnd()
+        self.cursor_before = self.cursor_at_start
+        self.foreground_before = self.foreground_at_start
         self.cursor_moved = False
         self.foreground_changed = False
+
+    def step(self) -> None:
+        """Re-baseline right before an operation.
+
+        Comparing against a baseline taken at start-up cannot tell the tool
+        moving the cursor apart from the person watching nudging their mouse
+        between steps. Sampling immediately before each operation attributes
+        only what changed *during* it.
+        """
+
+        self.cursor_before = cursor_pos()
+        self.foreground_before = foreground_hwnd()
 
     def violations(self) -> list[str]:
         found = []
         now = cursor_pos()
-        if now != self.cursor_at_start:
+        if now != self.cursor_before:
             self.cursor_moved = True
-            found.append(f"커서 {self.cursor_at_start} → {now}")
+            found.append(f"커서 {self.cursor_before} → {now}")
         front = foreground_hwnd()
-        if front != self.foreground_at_start:
+        if front != self.foreground_before:
             self.foreground_changed = True
-            found.append(f"전경 창 {self.foreground_at_start} → {front}")
+            found.append(f"전경 창 {self.foreground_before} → {front}")
+        self.cursor_before = now
+        self.foreground_before = front
         return found
 
     def record(self, name: str, ok: bool, detail: str = "", *, strict: bool = True) -> Check:
@@ -107,9 +123,31 @@ def _distinct_colours(capture, sample: int = 20000) -> int:
     return len(colours) if colours else sample
 
 
+def pick_editor(app):
+    """Pick the element a person would actually type into.
+
+    Taking the first `edit` in tree order lands on a ribbon control — in
+    PowerPoint that is the greyed-out font box, not the slide. The content area
+    is the largest editable thing that is actually enabled.
+    """
+
+    candidates = []
+    for role in ("document", "edit"):
+        for node in app.find("", role=role, limit=40):
+            if not node.enabled or node.rect is None:
+                continue
+            if node.rect.width < 120 or node.rect.height < 40:
+                continue
+            candidates.append(node)
+    if not candidates:
+        return None
+    return max(candidates, key=lambda n: n.rect.width * n.rect.height)
+
+
 def probe_reading(app, report: Report, phase: str) -> list:
     """스냅샷과 검색 — 창 상태(보임/최소화)에 관계없이 같은 결과가 나와야 합니다."""
 
+    report.step()
     started = time.time()
     text = app.snapshot(max_lines=80)
     elapsed = time.time() - started
@@ -131,7 +169,10 @@ def run(process: str, engine: str, write: bool, keep_open: bool) -> int:
     print(f"claude-hands 실기검증 — process={process!r} engine={engine}")
     print("=" * 70)
     report = Report()
-    print(f"\n시작: 커서 {report.cursor_at_start}, 전경 창 hwnd={report.foreground_at_start}\n")
+    from claude_hands import DPI_AWARENESS
+
+    print(f"\n시작: 커서 {report.cursor_at_start}, 전경 창 hwnd={report.foreground_at_start}")
+    print(f"DPI 인식: {DPI_AWARENESS}\n")
 
     # 0. 탐지
     print("[0] 창 탐지")
@@ -147,6 +188,7 @@ def run(process: str, engine: str, write: bool, keep_open: bool) -> int:
 
     # 1. 연결
     print("\n[1] 연결 (활성화 없이)")
+    report.step()
     try:
         app = attach(hwnd=found[0].hwnd, engine=engine)
         report.record("attach", True, f"hwnd={app.hwnd}, 상태={app.info.state}")
@@ -165,27 +207,30 @@ def run(process: str, engine: str, write: bool, keep_open: bool) -> int:
         print("     ", line.strip())
 
     # 3. 조작 — 편집 영역
-    edits = app.find("", role="edit", limit=1)
+    editor = pick_editor(app)
     original_text = None
-    if write and edits:
+    if write and editor:
         print("\n[3] 편집 영역에 입력 후 되읽기")
         marker = "claude-hands 실기검증 한글 ASCII 12345"
+        report.step()
         try:
-            original_text = app.text(edits[0].ref)
-            result = app.type(edits[0].ref, marker, allow_focus=False)
-            readback = app.text(edits[0].ref)
+            original_text = app.text(editor.ref)
+            result = app.type(editor.ref, marker, allow_focus=False)
+            readback = app.text(editor.ref)
             report.record(
                 "입력이 그대로 반영됨",
                 readback == marker,
-                f"방식={result.strategy} / 쓴 값={marker!r} / 읽은 값={readback!r}",
+                f'대상={editor.role} "{editor.name}" / 방식={result.strategy} / '
+                f"쓴 값={marker!r} / 읽은 값={readback!r}",
             )
         except ActionFailedError as exc:
             report.fail("편집 영역 입력", exc)
     elif write:
-        report.skip("편집 영역 입력", "이 창에는 편집 가능한 컨트롤이 없습니다.")
+        report.skip("편집 영역 입력", "활성 상태의 편집 가능한 영역이 없습니다.")
 
     # 4. 조작 — 버튼 / 체크박스
     print("\n[4] 버튼·체크박스 조작")
+    report.step()
     checkboxes = app.find("", role="checkbox", limit=1)
     if write and checkboxes:
         node = checkboxes[0]
@@ -214,6 +259,7 @@ def run(process: str, engine: str, write: bool, keep_open: bool) -> int:
 
     # 5. 보이는 상태 캡처
     print("\n[5] 화면 캡처")
+    report.step()
     try:
         capture = app.screenshot()
         png = capture.to_png(max_side=1200)
@@ -230,6 +276,7 @@ def run(process: str, engine: str, write: bool, keep_open: bool) -> int:
 
     # 6. 최소화 — 핵심 주장
     print("\n[6] 최소화 후에도 전부 동작하는가 (핵심)")
+    report.step()
     try:
         app.minimize()
         time.sleep(0.8)
@@ -244,11 +291,11 @@ def run(process: str, engine: str, write: bool, keep_open: bool) -> int:
         f"보임 {len(visible_nodes)}개 → 최소화 {len(minimized_nodes)}개",
     )
 
-    if write and edits:
+    if write and editor:
         try:
             marker2 = "최소화 상태에서 쓴 문장 " + time.strftime("%H:%M:%S")
-            result = app.type(edits[0].ref, marker2, allow_focus=False)
-            readback = app.text(edits[0].ref)
+            result = app.type(editor.ref, marker2, allow_focus=False)
+            readback = app.text(editor.ref)
             report.record(
                 "최소화 상태에서 입력·되읽기",
                 readback == marker2,
@@ -258,6 +305,7 @@ def run(process: str, engine: str, write: bool, keep_open: bool) -> int:
             report.fail("최소화 상태 입력", exc)
 
     print("\n[7] 최소화 상태 캡처 (화면 밖 복원)")
+    report.step()
     try:
         capture = app.screenshot(restore_if_minimized=True)
         png = capture.to_png(max_side=1200)
@@ -280,9 +328,13 @@ def run(process: str, engine: str, write: bool, keep_open: bool) -> int:
 
     # 8. 원상복구
     print("\n[8] 원상복구")
+    report.step()
     try:
-        if original_text is not None and edits:
-            app.type(edits[0].ref, original_text, allow_focus=False)
+        if original_text is not None and editor:
+            try:
+                app.type(editor.ref, original_text, allow_focus=False)
+            except ActionFailedError as exc:
+                print(f"         (원래 내용 복구 실패: {exc})")
         if original_state != "minimized" and not keep_open:
             app.restore()
             time.sleep(0.5)

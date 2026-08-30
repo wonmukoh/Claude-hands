@@ -172,9 +172,9 @@ def cmd_doctor(_args) -> int:
         return 1
     print()
 
-    from .win32.defs import enable_dpi_awareness
+    from . import DPI_AWARENESS
 
-    print(f"  DPI 인식        : {enable_dpi_awareness()}")
+    print(f"  DPI 인식        : {DPI_AWARENESS} (패키지 임포트 시점에 설정됨)")
 
     try:
         import comtypes  # noqa: F401
