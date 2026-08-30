@@ -53,6 +53,7 @@ class Capture:
     rect: Rect
     restored_offscreen: bool = False
     blank: bool = False
+    degraded: bool = False
 
     def to_image(self):
         from PIL import Image
@@ -101,6 +102,7 @@ class Capture:
             ),
             restored_offscreen=self.restored_offscreen,
             blank=self.blank,
+            degraded=self.degraded,
         )
 
 
@@ -172,6 +174,31 @@ def _grab(hwnd: int, rect: Rect, *, use_bitblt: bool) -> bytes:
         user32.ReleaseDC(hwnd, window_dc)
 
 
+def _grab_best(hwnd: int, rect: Rect) -> tuple[bytes, bool]:
+    """Get the best pixels this window will give, and say whether they are safe.
+
+    ``PrintWindow`` is the one that is occlusion-proof — the window redraws
+    itself into our bitmap regardless of what sits on top — so it is always
+    tried first. Some GDI-era apps, and some compatibility layers, implement it
+    as a no-op that hands back a black rectangle; blitting the window's own DC
+    still gets real pixels there, but reads whatever is physically on screen
+    inside the window's rectangle, so anything overlapping bleeds in.
+
+    Returns ``(pixels, degraded)`` where ``degraded`` marks that blit fallback.
+    """
+
+    pixels = _grab(hwnd, rect, use_bitblt=False)
+    if _blank_ratio(pixels) <= 0.98:
+        return pixels, False
+    try:
+        blitted = _grab(hwnd, rect, use_bitblt=True)
+    except CaptureError:
+        return pixels, False
+    if _blank_ratio(blitted) <= 0.98:
+        return blitted, True
+    return pixels, False
+
+
 def capture_window(
     hwnd: int,
     *,
@@ -189,14 +216,15 @@ def capture_window(
     minimized = is_minimized(hwnd)
     if not minimized:
         rect = window_rect(hwnd)
-        pixels = _grab(hwnd, rect, use_bitblt=False)
-        if _blank_ratio(pixels) > 0.98:
-            # Some GDI-era apps ignore PrintWindow; if the window happens to be
-            # visible, a straight BitBlt of its own DC still gets real pixels.
-            fallback = _grab(hwnd, rect, use_bitblt=True)
-            if _blank_ratio(fallback) < 0.98:
-                pixels = fallback
-        return Capture(rect.width, rect.height, pixels, rect)
+        pixels, degraded = _grab_best(hwnd, rect)
+        return Capture(
+            rect.width,
+            rect.height,
+            pixels,
+            rect,
+            blank=_blank_ratio(pixels) > 0.98,
+            degraded=degraded,
+        )
 
     if not restore_if_minimized:
         raise CaptureError(
@@ -222,12 +250,13 @@ def capture_window(
         restored_rect = window_rect(hwnd, frame_bounds=False)
 
         rect = window_rect(hwnd)
-        pixels = _grab(hwnd, rect, use_bitblt=False)
+        pixels, degraded = _grab_best(hwnd, rect)
 
         if _blank_ratio(pixels) > 0.98:
             # Some compositors will not render a window sitting at the bottom
             # of the z-order. Moving it off the desktop — position only, never
-            # size — gives a second chance.
+            # size — gives a second chance. A blit cannot help out there (there
+            # are no screen pixels to read), so only PrintWindow is tried.
             virtual = virtual_screen_rect()
             move_window(hwnd, virtual.right + 64, virtual.top)
             parked = True
@@ -235,7 +264,7 @@ def capture_window(
             retry_rect = window_rect(hwnd)
             retry_pixels = _grab(hwnd, retry_rect, use_bitblt=False)
             if _blank_ratio(retry_pixels) <= 0.98:
-                rect, pixels = retry_rect, retry_pixels
+                rect, pixels, degraded = retry_rect, retry_pixels, False
 
         return Capture(
             rect.width,
@@ -244,6 +273,7 @@ def capture_window(
             rect,
             restored_offscreen=True,
             blank=_blank_ratio(pixels) > 0.98,
+            degraded=degraded,
         )
     finally:
         # Put the window back exactly: original position first (size was never

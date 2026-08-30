@@ -71,6 +71,13 @@ CLASS_ROLES: tuple[tuple[str, str], ...] = (
 )
 
 EDIT_ROLES = {"edit"}
+
+# Roles whose window text carries keyboard-accelerator markers. Windows draws
+# "&Save" as "Save" with the S underlined, so the ampersand must never reach a
+# caller: nobody searches for "Add appli&cation". UI Automation strips it for
+# us; the message backend has to do it itself.
+ACCELERATOR_ROLES = {"button", "checkbox", "radiobutton", "group", "text",
+                     "menuitem", "tabitem", "toolbar", "statusbar"}
 TOGGLE_STYLES = {BS_CHECKBOX, BS_AUTOCHECKBOX, BS_3STATE, BS_AUTO3STATE}
 RADIO_STYLES = {BS_RADIOBUTTON, BS_AUTORADIOBUTTON}
 
@@ -81,6 +88,31 @@ def _class_name(hwnd: int) -> str:
     buf = ctypes.create_unicode_buffer(256)
     user32.GetClassNameW(hwnd, buf, 256)
     return buf.value
+
+
+def strip_accelerator(text: str) -> str:
+    """Turn a control's raw label into what the user actually sees.
+
+    ``&`` marks the next character as the accelerator and is not drawn; ``&&``
+    is a literal ampersand.
+    """
+
+    if "&" not in text:
+        return text
+    out: list[str] = []
+    index = 0
+    while index < len(text):
+        char = text[index]
+        if char == "&":
+            if index + 1 < len(text) and text[index + 1] == "&":
+                out.append("&")
+                index += 2
+                continue
+            index += 1  # drop the marker, keep the letter after it
+            continue
+        out.append(char)
+        index += 1
+    return "".join(out)
 
 
 def control_text(hwnd: int, *, limit: int = 32768, timeout_ms: int = 1500) -> str:
@@ -230,7 +262,8 @@ class Win32Element:
     @property
     def name(self) -> str:
         if self._name is None:
-            self._name = control_text(self.hwnd) if self.role != "edit" else ""
+            raw = control_text(self.hwnd) if self.role not in EDIT_ROLES else ""
+            self._name = strip_accelerator(raw) if self.role in ACCELERATOR_ROLES else raw
         return self._name
 
     @property

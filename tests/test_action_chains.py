@@ -125,7 +125,7 @@ class Recorder:
 def rec(monkeypatch):
     recorder = Recorder()
 
-    monkeypatch.setattr(actions, "_uia", lambda func, *a, **k: func(*a, **k))
+    monkeypatch.setattr(actions, "_call", lambda element, func, *a, **k: func(*a, **k))
     monkeypatch.setattr(actions, "deepest_child_at", lambda hwnd, x, y: hwnd + 1)
 
     def fake_click(top, x, y, *, button="left", double=False, modifiers=(), target_hwnd=None):
@@ -614,3 +614,72 @@ def test_menu_reports_a_missing_step_with_the_path_so_far(rec):
 
     with pytest.raises(ActionFailedError, match="없는메뉴"):
         actions.menu_select(session, "파일 > 없는메뉴")
+
+
+# --------------------------------------------------------------------------
+# Engine routing
+# --------------------------------------------------------------------------
+
+
+class Win32ishElement(FakeElement):
+    """An element from the window-message backend."""
+
+    engine = "win32"
+
+
+def test_win32_engine_calls_never_touch_the_com_worker(monkeypatch):
+    """The fallback engine exists for machines where COM cannot start.
+
+    Marshalling its window messages onto the UIA worker both boots the COM
+    stack it is meant to avoid and makes SendMessage fail with
+    RPC_E_CANTCALLOUT_ININPUTSYNCCALL.
+    """
+
+    import claude_hands.uia.core as core
+
+    def explode():
+        raise AssertionError("win32 engine must not use the COM worker")
+
+    monkeypatch.setattr(core, "get_worker", explode)
+
+    node = button()
+    invoke = FakePattern()
+    element = Win32ishElement(node, {"invoke": invoke})
+    session = make_session({"e1": (node, element)})
+
+    result = actions.click(session, "e1")
+
+    assert result.strategy == "win32:invoke"
+    assert invoke.calls == [("Invoke",)]
+
+
+def test_uia_engine_calls_go_through_the_com_worker(monkeypatch):
+    import claude_hands.uia.core as core
+
+    used = []
+
+    class Worker:
+        def call(self, func, *a, **k):
+            used.append(func)
+            return func(*a, **k)
+
+    monkeypatch.setattr(core, "get_worker", lambda: Worker())
+
+    node = button()
+    invoke = FakePattern()
+    session = make_session({"e1": (node, FakeElement(node, {"invoke": invoke}))})
+
+    result = actions.click(session, "e1")
+
+    assert result.strategy == "uia:invoke"
+    assert used, "UIA calls must be marshalled to the COM worker"
+
+
+def test_strategy_names_report_the_engine_that_actually_ran(monkeypatch):
+    monkeypatch.setattr(actions, "_call", lambda element, func, *a, **k: func(*a, **k))
+
+    node = NodeInfo(role="checkbox", name="옵션", patterns=("toggle",), toggle_state="off")
+    element = Win32ishElement(node, {"toggle": FakePattern(CurrentToggleState=0)})
+    session = make_session({"e1": (node, element)})
+
+    assert actions.click(session, "e1").strategy == "win32:toggle"

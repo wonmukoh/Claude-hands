@@ -84,7 +84,7 @@ def _live_rect(element, node: NodeInfo) -> Rect:
     """
 
     try:
-        rect = _uia(lambda: element.refresh().rect)
+        rect = _call(element, lambda: element.refresh().rect)
     except Exception:  # noqa: BLE001 - fall back to what the snapshot saw
         rect = None
     if rect is None or not rect.width or not rect.height:
@@ -100,8 +100,23 @@ def _element_point(element, node: NodeInfo) -> tuple[int, int]:
     return screen_point_in_element(_live_rect(element, node))
 
 
-def _uia(func, *args, **kwargs):
-    """Run a COM call on the UIA worker thread."""
+def _engine(element) -> str:
+    """Which backend this element came from — reported so results never lie."""
+
+    return getattr(element, "engine", "uia")
+
+
+def _call(element, func, *args, **kwargs):
+    """Run one backend call on the thread that backend needs.
+
+    UI Automation calls are marshalled to the COM worker. Window-message calls
+    must NOT be: ``SendMessage`` from inside a COM apartment fails with
+    RPC_E_CANTCALLOUT_ININPUTSYNCCALL, and touching the worker at all would
+    boot the COM stack that the win32 engine exists to avoid.
+    """
+
+    if _engine(element) == "win32":
+        return func(*args, **kwargs)
 
     from .uia.core import get_worker
 
@@ -142,7 +157,7 @@ def click(
         for strategy, runner in _click_pattern_chain(element, node):
             attempts.append(strategy)
             try:
-                _uia(runner)
+                _call(element, runner)
                 return ActionResult(True, "click", strategy, label, attempts=attempts)
             except Exception as exc:  # noqa: BLE001 - try the next strategy
                 attempts[-1] = f"{strategy}(실패: {_short(exc)})"
@@ -151,7 +166,7 @@ def click(
         context_label = f"{_engine(element)}:context-menu"
         attempts.append(context_label)
         try:
-            _uia(lambda: _show_context_menu(element))
+            _call(element, lambda: _show_context_menu(element))
             return ActionResult(True, "click", context_label, label, attempts=attempts)
         except Exception as exc:  # noqa: BLE001
             attempts[-1] = f"{context_label}(실패: {_short(exc)})"
@@ -178,12 +193,6 @@ def click(
         detail=f"좌표 {x},{y} → hwnd={target_hwnd}",
         attempts=attempts,
     )
-
-
-def _engine(element) -> str:
-    """Which backend this element came from — reported so results never lie."""
-
-    return getattr(element, "engine", "uia")
 
 
 def _session_engine(session: WindowSession) -> str:
@@ -290,13 +299,13 @@ def type_text(
         try:
             is_readonly = False
             try:
-                is_readonly = bool(_uia(lambda: value_pattern.CurrentIsReadOnly))
+                is_readonly = bool(_call(element, lambda: value_pattern.CurrentIsReadOnly))
             except Exception:  # noqa: BLE001 - property missing on some apps
                 is_readonly = False
             if is_readonly:
                 raise ActionFailedError("읽기 전용 필드입니다.")
             new_text = text if clear else (node.value or "") + text
-            _uia(lambda: value_pattern.SetValue(new_text))
+            _call(element, lambda: value_pattern.SetValue(new_text))
             if submit:
                 send_keys(_owning_hwnd(session, node), "enter")
             return ActionResult(
@@ -312,7 +321,7 @@ def type_text(
         attempts.append(legacy_label)
         try:
             new_text = text if clear else (node.value or "") + text
-            _uia(lambda: legacy.SetValue(new_text))
+            _call(element, lambda: legacy.SetValue(new_text))
             if submit:
                 send_keys(_owning_hwnd(session, node), "enter")
             return ActionResult(
@@ -374,7 +383,7 @@ def set_value(session: WindowSession, ref: str, value: str | float) -> ActionRes
     range_pattern = element.pattern("rangevalue")
     if range_pattern is not None:
         try:
-            _uia(lambda: range_pattern.SetValue(float(value)))
+            _call(element, lambda: range_pattern.SetValue(float(value)))
             return ActionResult(True, "set_value", f"{_engine(element)}:rangevalue", label, detail=str(value))
         except Exception as exc:  # noqa: BLE001
             raise ActionFailedError(f"{label} 값 설정 실패: {_short(exc)}") from exc
@@ -421,7 +430,7 @@ def focus(session: WindowSession, ref: str) -> ActionResult:
     node, element = session.resolve(ref)
     label = _target_label(node)
     try:
-        _uia(lambda: element.com.SetFocus())
+        _call(element, lambda: element.com.SetFocus())
         return ActionResult(True, "focus", f"{_engine(element)}:SetFocus", label)
     except Exception as exc:  # noqa: BLE001
         raise ActionFailedError(f"{label} 에 포커스를 줄 수 없습니다: {_short(exc)}") from exc
@@ -472,7 +481,7 @@ def scroll(
                 no_scroll = getattr(module, "ScrollPatternNoScroll", -1)
                 horizontal = percent if axis == "horizontal" else no_scroll
                 vertical = percent if axis == "vertical" else no_scroll
-                _uia(lambda: pattern.SetScrollPercent(horizontal, vertical))
+                _call(element, lambda: pattern.SetScrollPercent(horizontal, vertical))
                 return ActionResult(
                     True, "scroll", f"{_engine(element)}:scroll", label, detail=f"{axis} {percent}%", attempts=attempts
                 )
@@ -483,7 +492,7 @@ def scroll(
             horizontal = step if axis == "horizontal" else no_amount
             vertical = step if axis == "vertical" else no_amount
             for _ in range(max(1, amount)):
-                _uia(lambda: pattern.Scroll(horizontal, vertical))
+                _call(element, lambda: pattern.Scroll(horizontal, vertical))
             return ActionResult(
                 True, "scroll", f"{_engine(element)}:scroll", label,
                 detail=f"{direction} × {amount}", attempts=attempts,
@@ -535,7 +544,7 @@ def scroll_into_view(session: WindowSession, ref: str, *, quiet: bool = False) -
         pattern = element.pattern("scrollitem")
         if pattern is None:
             return None
-        _uia(lambda: pattern.ScrollIntoView())
+        _call(element, lambda: pattern.ScrollIntoView())
         return ActionResult(True, "scroll_into_view", f"{_engine(element)}:scrollitem", _target_label(node))
     except Exception:  # noqa: BLE001 - purely an optimisation
         if quiet:
@@ -555,7 +564,7 @@ def select(session: WindowSession, ref: str, *, add: bool = False) -> ActionResu
     if pattern is None:
         return click(session, ref)
     try:
-        _uia(lambda: pattern.AddToSelection() if add else pattern.Select())
+        _call(element, lambda: pattern.AddToSelection() if add else pattern.Select())
         return ActionResult(True, "select", f"{_engine(element)}:selectionitem", label)
     except Exception as exc:  # noqa: BLE001
         raise ActionFailedError(f"{label} 선택 실패: {_short(exc)}") from exc
@@ -568,7 +577,7 @@ def toggle(session: WindowSession, ref: str, *, to: bool | None = None) -> Actio
     if pattern is None:
         return click(session, ref)
     try:
-        current = _uia(lambda: int(pattern.CurrentToggleState))
+        current = _call(element, lambda: int(pattern.CurrentToggleState))
         if to is not None:
             want = 1 if to else 0
             if current == want:
@@ -576,12 +585,12 @@ def toggle(session: WindowSession, ref: str, *, to: bool | None = None) -> Actio
                     True, "toggle", "noop", label, detail=f"이미 {'켜짐' if to else '꺼짐'} 상태"
                 )
             for _ in range(3):
-                _uia(lambda: pattern.Toggle())
-                if int(_uia(lambda: pattern.CurrentToggleState)) == want:
+                _call(element, lambda: pattern.Toggle())
+                if int(_call(element, lambda: pattern.CurrentToggleState)) == want:
                     break
         else:
-            _uia(lambda: pattern.Toggle())
-        state = _uia(lambda: int(pattern.CurrentToggleState))
+            _call(element, lambda: pattern.Toggle())
+        state = _call(element, lambda: int(pattern.CurrentToggleState))
         from .uia.core import TOGGLE_STATES
 
         return ActionResult(
@@ -598,7 +607,7 @@ def expand(session: WindowSession, ref: str, *, collapse: bool = False) -> Actio
     if pattern is None:
         return click(session, ref)
     try:
-        _uia(lambda: pattern.Collapse() if collapse else pattern.Expand())
+        _call(element, lambda: pattern.Collapse() if collapse else pattern.Expand())
         return ActionResult(
             True, "collapse" if collapse else "expand", f"{_engine(element)}:expandcollapse", label
         )
@@ -626,7 +635,7 @@ def get_text(session: WindowSession, ref: str | None = None, *, max_chars: int =
     text_pattern = element.pattern("text")
     if text_pattern is not None:
         try:
-            text = _uia(lambda: text_pattern.DocumentRange.GetText(max_chars))
+            text = _call(element, lambda: text_pattern.DocumentRange.GetText(max_chars))
             if text:
                 return str(text)
         except Exception:  # noqa: BLE001 - fall through to simpler reads
@@ -705,6 +714,26 @@ def menu_select(session: WindowSession, path: str, *, separator: str = ">") -> A
     if not steps:
         raise ActionFailedError("메뉴 경로가 비어 있습니다. 예: '파일 > 저장'")
 
+    # A real menu bar is the dependable route: posting the WM_COMMAND the menu
+    # itself would post works while the window is minimised, and unlike a
+    # keyboard accelerator it does not depend on physical key state.
+    from .win32.menus import find_menu_item, invoke_menu_item, read_menu
+
+    try:
+        menu = read_menu(session.hwnd)
+    except ClaudeHandsError:
+        menu = []
+    if menu:
+        item = find_menu_item(menu, steps)
+        command_id = invoke_menu_item(session.hwnd, item)
+        return ActionResult(
+            True,
+            "menu_select",
+            "menu:WM_COMMAND",
+            " > ".join(steps),
+            detail=f"{item.label!r} (명령 id={command_id})",
+        )
+
     walked: list[str] = []
     for index, step in enumerate(steps):
         matches = session.find(step, limit=8)
@@ -727,7 +756,7 @@ def menu_select(session: WindowSession, path: str, *, separator: str = ">") -> A
             element = session.element_for(node)
             pattern = element.pattern("expandcollapse")
             if pattern is not None:
-                _uia(lambda: pattern.Expand())
+                _call(element, lambda: pattern.Expand())
             else:
                 click(session, node.ref)
             time.sleep(0.25)

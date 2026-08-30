@@ -156,6 +156,8 @@ def run(process: str, engine: str, write: bool, keep_open: bool) -> int:
 
     original_state = app.info.state
 
+    restored_geometry = app.info.rect
+
     # 2. 보이는 상태에서 읽기
     print("\n[2] 보이는 상태에서 읽기")
     visible_nodes = probe_reading(app, report, "보임")
@@ -221,7 +223,7 @@ def run(process: str, engine: str, write: bool, keep_open: bool) -> int:
             "보이는 창 캡처가 실제 내용을 담음",
             colours >= 8 and not capture.blank,
             f"verify_visible.png — {capture.width}x{capture.height}, "
-            f"{len(png)/1024:.0f}KB, 고유색 {colours}개",
+            f"{len(png)/1024:.0f}KB, 고유색 {colours}개, degraded={capture.degraded}",
         )
     except ClaudeHandsError as exc:
         report.fail("보이는 창 캡처", exc)
@@ -256,7 +258,6 @@ def run(process: str, engine: str, write: bool, keep_open: bool) -> int:
             report.fail("최소화 상태 입력", exc)
 
     print("\n[7] 최소화 상태 캡처 (화면 밖 복원)")
-    geometry_before = app.info.rect
     try:
         capture = app.screenshot(restore_if_minimized=True)
         png = capture.to_png(max_side=1200)
@@ -266,20 +267,11 @@ def run(process: str, engine: str, write: bool, keep_open: bool) -> int:
             "최소화된 창의 픽셀 확보",
             colours >= 8 and not capture.blank,
             f"verify_minimized.png — {capture.width}x{capture.height}, "
-            f"{len(png)/1024:.0f}KB, 고유색 {colours}개, blank={capture.blank}",
+            f"{len(png)/1024:.0f}KB, 고유색 {colours}개, blank={capture.blank}, degraded={capture.degraded}",
         )
     except ClaudeHandsError as exc:
         report.fail("최소화 상태 캡처", exc)
 
-    # 캡처가 창의 크기·위치를 훼손하지 않았는지 — 사용자 창을 건드리면 안 됩니다
-    geometry_after = app.info.rect
-    report.record(
-        "캡처가 창 크기·위치를 바꾸지 않음",
-        (geometry_before.width, geometry_before.height)
-        == (geometry_after.width, geometry_after.height),
-        f"{geometry_before.width}x{geometry_before.height} → "
-        f"{geometry_after.width}x{geometry_after.height}",
-    )
     report.record(
         "캡처 후에도 최소화 상태 유지",
         is_minimized(app.hwnd),
@@ -295,6 +287,19 @@ def run(process: str, engine: str, write: bool, keep_open: bool) -> int:
             app.restore()
             time.sleep(0.5)
         report.record("복원", True, f"상태={app.info.state}")
+
+        if original_state != "minimized" and not keep_open:
+            after = app.info.rect
+            report.record(
+                "캡처가 창 크기·위치를 훼손하지 않음",
+                (restored_geometry.width, restored_geometry.height)
+                == (after.width, after.height)
+                and (restored_geometry.left, restored_geometry.top)
+                == (after.left, after.top),
+                f"{restored_geometry.width}x{restored_geometry.height}"
+                f"@{restored_geometry.left},{restored_geometry.top} → "
+                f"{after.width}x{after.height}@{after.left},{after.top}",
+            )
     except ClaudeHandsError as exc:
         report.fail("복원", exc)
 
