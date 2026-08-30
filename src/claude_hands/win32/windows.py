@@ -451,6 +451,26 @@ def close_window(hwnd: int) -> None:
     user32.PostMessageW(hwnd, WM_CLOSE, 0, 0)
 
 
+def cursor_pos() -> tuple[int, int]:
+    """Where the user's mouse pointer is. Used to prove we never moved it."""
+
+    require_windows()
+    from .defs import POINT, user32
+
+    point = POINT()
+    user32.GetCursorPos(ctypes.byref(point))
+    return point.x, point.y
+
+
+def foreground_hwnd() -> int:
+    """The window the user is actually working in right now."""
+
+    require_windows()
+    from .defs import user32
+
+    return int(user32.GetForegroundWindow())
+
+
 def virtual_screen_rect() -> Rect:
     require_windows()
     from .defs import user32

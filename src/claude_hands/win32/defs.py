@@ -323,6 +323,9 @@ if IS_WINDOWS:  # pragma: no cover - Windows only
     user32.RealChildWindowFromPoint.argtypes = [wintypes.HWND, POINT]
     user32.RealChildWindowFromPoint.restype = wintypes.HWND
 
+    user32.GetCursorPos.argtypes = [ctypes.POINTER(POINT)]
+    user32.GetCursorPos.restype = wintypes.BOOL
+
     user32.GetSystemMetrics.argtypes = [ctypes.c_int]
     user32.GetSystemMetrics.restype = ctypes.c_int
 

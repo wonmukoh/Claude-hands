@@ -13,7 +13,9 @@ from .windows import (  # noqa: F401
     Rect,
     WindowInfo,
     WindowNotFoundError,
+    cursor_pos,
     describe_window,
     find_window,
+    foreground_hwnd,
     list_windows,
 )
