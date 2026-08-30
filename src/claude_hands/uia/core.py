@@ -30,6 +30,56 @@ class UiaUnavailableError(ClaudeHandsError):
     """Raised when the UI Automation stack cannot be initialised."""
 
 
+# COM apartment bookkeeping
+# -------------------------
+# comtypes joins an apartment the moment it is imported, using the *default*
+# COINIT_APARTMENTTHREADED unless ``sys.coinit_flags`` was set first. Once a
+# thread is in an apartment the choice is final: asking for a different one
+# raises RPC_E_CHANGED_MODE. So the preference has to be registered here, at
+# import of this module, before anything can pull comtypes in — importing it
+# first on a worker thread and asking for the MTA afterwards fails outright.
+
+RPC_E_CHANGED_MODE = -2147417850
+COINIT_MULTITHREADED = 0
+
+
+def prefer_mta() -> bool:
+    """Ask that comtypes join the multi-threaded apartment. Call before import.
+
+    Returns False when comtypes is already loaded and the preference can no
+    longer be expressed — the process keeps whatever apartment it has, which
+    still works for UI Automation.
+    """
+
+    if "comtypes" in sys.modules:
+        return False
+    sys.coinit_flags = COINIT_MULTITHREADED
+    return True
+
+
+prefer_mta()
+
+
+def init_thread_com(comtypes_module: Any) -> str:
+    """Join an apartment on the calling thread; report which one we got.
+
+    An apartment already fixed by an earlier comtypes import is not an error:
+    UI Automation is callable from a single-threaded apartment too, it just
+    marshals more. Failing here would take the whole tool down for a
+    difference that does not stop it working.
+    """
+
+    try:
+        comtypes_module.CoInitializeEx(
+            getattr(comtypes_module, "COINIT_MULTITHREADED", COINIT_MULTITHREADED)
+        )
+        return "mta"
+    except OSError as exc:
+        if getattr(exc, "winerror", None) == RPC_E_CHANGED_MODE:
+            return "sta"
+        raise
+
+
 # --------------------------------------------------------------------------
 # Worker thread (COM MTA)
 # --------------------------------------------------------------------------
@@ -43,6 +93,7 @@ class UiaWorker:
         self._thread = threading.Thread(target=self._run, name=name, daemon=True)
         self._started = threading.Event()
         self._error: Optional[BaseException] = None
+        self.apartment = "unknown"
         self._stop = object()
         self._thread.start()
         self._started.wait(timeout=15)
@@ -51,9 +102,10 @@ class UiaWorker:
 
     def _run(self) -> None:  # pragma: no cover - Windows only
         try:
+            prefer_mta()  # no-op if comtypes is already loaded
             import comtypes
 
-            comtypes.CoInitializeEx(comtypes.COINIT_MULTITHREADED)
+            self.apartment = init_thread_com(comtypes)
         except BaseException as exc:  # noqa: BLE001 - surfaced to the constructor
             self._error = exc
             self._started.set()
@@ -214,9 +266,7 @@ def _load() -> tuple[Any, Any]:  # pragma: no cover - Windows only
         return _uia_module, _uia
 
     require_windows()
-    # MTA must be selected before comtypes is first imported anywhere.
-    if "comtypes" not in sys.modules:
-        sys.coinit_flags = 0  # COINIT_MULTITHREADED
+    prefer_mta()  # only effective if nothing has imported comtypes yet
 
     try:
         import comtypes.client
@@ -307,14 +357,10 @@ def ensure_com() -> None:
     if getattr(_thread_state, "ready", False):
         return
     try:
+        prefer_mta()
         import comtypes
 
-        initialiser = getattr(comtypes, "CoInitializeEx", None)
-        if initialiser is not None:
-            initialiser(getattr(comtypes, "COINIT_MULTITHREADED", 0))
-    except OSError:
-        # RPC_E_CHANGED_MODE: the thread is already in an apartment. Fine.
-        pass
+        init_thread_com(comtypes)
     except Exception:  # noqa: BLE001 - never block on COM bookkeeping
         pass
     _thread_state.ready = True
