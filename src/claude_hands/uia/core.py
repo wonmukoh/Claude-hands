@@ -633,18 +633,26 @@ class UiaElement:
     def to_node_info(self, depth: int = 0):
         from ..elements import NodeInfo
 
+        # Pattern availability has to be read by property id. Unlike Name or
+        # IsEnabled, IUIAutomationElement exposes no CurrentIsInvokePattern-
+        # Available member, so the attribute lookup `_prop` does raises and is
+        # swallowed into the default — every element came back with no
+        # patterns at all. Measured against PowerPoint: the search box reports
+        # value=False through the attribute and value=True through the id.
+        # These ids are already in the cache request, so this stays a cache
+        # lookup rather than a cross-process call per node.
         patterns: list[str] = []
-        for key, prop in (
-            ("invoke", "IsInvokePatternAvailable"),
-            ("value", "IsValuePatternAvailable"),
-            ("toggle", "IsTogglePatternAvailable"),
-            ("selectionitem", "IsSelectionItemPatternAvailable"),
-            ("expandcollapse", "IsExpandCollapsePatternAvailable"),
-            ("scroll", "IsScrollPatternAvailable"),
-            ("text", "IsTextPatternAvailable"),
-            ("rangevalue", "IsRangeValuePatternAvailable"),
+        for key, property_id in (
+            ("invoke", "UIA_IsInvokePatternAvailablePropertyId"),
+            ("value", "UIA_IsValuePatternAvailablePropertyId"),
+            ("toggle", "UIA_IsTogglePatternAvailablePropertyId"),
+            ("selectionitem", "UIA_IsSelectionItemPatternAvailablePropertyId"),
+            ("expandcollapse", "UIA_IsExpandCollapsePatternAvailablePropertyId"),
+            ("scroll", "UIA_IsScrollPatternAvailablePropertyId"),
+            ("text", "UIA_IsTextPatternAvailablePropertyId"),
+            ("rangevalue", "UIA_IsRangeValuePatternAvailablePropertyId"),
         ):
-            if bool(self._prop(prop, False)):
+            if bool(self.property_value(property_id, False)):
                 patterns.append(key)
 
         value = ""
