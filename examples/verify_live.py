@@ -37,6 +37,11 @@ from claude_hands.win32.defs import (  # noqa: E402
 from claude_hands.win32.windows import cursor_pos, foreground_hwnd, is_minimized  # noqa: E402
 
 
+TREE_CAP = 4000
+"""Snapshot line limit. Above any real application tree, so a count that
+reaches it means the read was truncated, not that the tree is that big."""
+
+
 @dataclass
 class Check:
     name: str
@@ -96,6 +101,12 @@ class Report:
 
     def skip(self, name: str, why: str) -> None:
         print(f"  [SKIP] {name}\n         {why}")
+        # A skipped step performs no operation, so it must not leave its
+        # stretch of wall-clock hanging over the next check. Without this the
+        # next `record` blames the tool for every mouse twitch since the
+        # section began — measured: a read-only `find` failed because the
+        # person watching moved their mouse during the skip above it.
+        self.step()
 
     def summary(self) -> int:
         passed = sum(1 for c in self.checks if c.ok)
@@ -123,18 +134,31 @@ def _distinct_colours(capture, sample: int = 20000) -> int:
     return len(colours) if colours else sample
 
 
+EDITOR_ROLES = ("document", "edit", "combobox", "text", "custom", "pane")
+
+
 def pick_editor(app):
     """Pick the element a person would actually type into.
 
-    Taking the first `edit` in tree order lands on a ribbon control — in
-    PowerPoint that is the greyed-out font box, not the slide. The content area
-    is the largest editable thing that is actually enabled.
+    Two things decide this, and guessing from the role alone gets both wrong.
+
+    A control only takes text if it exposes the value pattern, so that is the
+    filter — not the role name. Office proves why: PowerPoint's slide surface
+    comes through as `custom "슬라이드 5"`, never as `document` or `edit`, while
+    the only elements that *are* named `edit` are ribbon boxes. Restricting the
+    search to document/edit found nothing to type into at all.
+
+    Among what remains, the largest enabled one is the content area rather than
+    a ribbon box. Size alone is not enough — the ribbon's greyed-out font box
+    outranks a small text frame — so `enabled` is checked first.
     """
 
     candidates = []
-    for role in ("document", "edit"):
+    for role in EDITOR_ROLES:
         for node in app.find("", role=role, limit=40):
             if not node.enabled or node.rect is None:
+                continue
+            if "value" not in node.patterns:
                 continue
             if node.rect.width < 120 or node.rect.height < 40:
                 continue
@@ -149,13 +173,18 @@ def probe_reading(app, report: Report, phase: str) -> list:
 
     report.step()
     started = time.time()
-    text = app.snapshot(max_lines=80)
+    # The cap has to sit above any real tree. At 80 both PowerPoint reads
+    # returned exactly 80 of its 203 elements, so "same size minimised as
+    # visible" — the claim this whole script exists to test — compared two
+    # saturated caps and could not have failed.
+    text = app.snapshot(max_lines=TREE_CAP)
     elapsed = time.time() - started
     nodes = [line for line in text.splitlines() if line.strip().startswith("[")]
     report.record(
         f"[{phase}] UI 트리 읽기",
-        len(nodes) >= 2,
-        f"요소 {len(nodes)}개, {elapsed:.2f}초, 엔진={app.engine}",
+        2 <= len(nodes) < TREE_CAP,
+        f"요소 {len(nodes)}개, {elapsed:.2f}초, 엔진={app.engine}"
+        + (f" — 상한 {TREE_CAP} 에 걸림: 비교가 무의미합니다" if len(nodes) >= TREE_CAP else ""),
     )
     return nodes
 
@@ -226,7 +255,21 @@ def run(process: str, engine: str, write: bool, keep_open: bool) -> int:
         except ActionFailedError as exc:
             report.fail("편집 영역 입력", exc)
     elif write:
-        report.skip("편집 영역 입력", "활성 상태의 편집 가능한 영역이 없습니다.")
+        # Say which elements were rejected and why, so this reads as a fact
+        # about the application rather than as the harness giving up.
+        seen = []
+        for role in EDITOR_ROLES:
+            for node in app.find("", role=role, limit=40):
+                if "value" not in node.patterns:
+                    continue
+                why = "비활성" if not node.enabled else "너무 작음"
+                size = f"{node.rect.width}x{node.rect.height}" if node.rect else "크기 없음"
+                seen.append(f'{node.role} "{node.name}" {size} — {why}')
+        report.skip(
+            "편집 영역 입력",
+            "값 패턴을 가진 입력 가능한 영역이 없습니다."
+            + (" 후보였던 것: " + "; ".join(seen[:5]) if seen else " (값 패턴을 가진 요소 자체가 없습니다.)"),
+        )
 
     # 4. 조작 — 버튼 / 체크박스
     print("\n[4] 버튼·체크박스 조작")
@@ -249,6 +292,7 @@ def run(process: str, engine: str, write: bool, keep_open: bool) -> int:
     else:
         report.skip("체크박스 토글", "체크박스가 없거나 --no-write 입니다.")
 
+    report.step()
     buttons = app.find("", role="button", limit=3)
     report.record(
         "버튼을 조작 가능한 요소로 인식",
