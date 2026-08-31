@@ -320,9 +320,14 @@ def list_windows(
             if ex_style & WS_EX_TOOLWINDOW:
                 continue
         if not include_hidden:
-            # A minimised window is not "visible" in the IsWindowVisible sense
-            # on some shells, so keep it explicitly.
-            if not info.visible and not info.minimized:
+            # A window a person actually parked in the taskbar keeps
+            # WS_VISIBLE while minimised — measured on Windows 11, PowerPoint
+            # and Explorer both report IsWindowVisible=1, IsIconic=1. Helper
+            # windows nobody ever sees (OZ*MsgWnd, "DWM Notification Window",
+            # tray agents) carry the minimised style without ever having been
+            # shown: IsWindowVisible=0, IsIconic=1. Treating IsIconic as proof
+            # of a real window let every one of those into the list.
+            if not info.visible:
                 continue
             if info.cloaked and not info.minimized:
                 continue
