@@ -233,8 +233,8 @@ def _add_target_args(parser: argparse.ArgumentParser) -> None:
     group.add_argument(
         "--engine",
         default="auto",
-        choices=["auto", "uia", "win32"],
-        help="조작 엔진 (기본 auto: UIA 우선, 불가하면 창 메시지)",
+        choices=["auto", "uia", "win32", "office"],
+        help="조작 엔진 (기본 auto: Office 문서 모델 → UIA → 창 메시지)",
     )
 
 

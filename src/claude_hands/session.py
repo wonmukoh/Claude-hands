@@ -126,6 +126,24 @@ class WindowSession:
                 self.hwnd, max_depth=options.max_depth, max_nodes=options.max_nodes
             )
 
+        if self.engine == "office":
+            self.active_engine = "office"
+            return self._build_office_tree(options)
+
+        # `auto` reaches for the document model first on an Office window,
+        # because UIA cannot see inside one: PowerPoint's slides carry no value
+        # pattern, so a UIA tree of PowerPoint can be read and clicked but
+        # never edited. If the document model is not reachable — the app is
+        # mid-launch, automation is disabled by policy — the UIA tree is still
+        # a useful answer, so this falls through rather than failing.
+        if self.engine == "auto" and self._is_office_process():
+            try:
+                result = self._build_office_tree(options)
+                self.active_engine = "office"
+                return result
+            except ClaudeHandsError as exc:
+                self.engine_note = f"Office 문서 모델을 쓸 수 없어 UI 트리로 전환했습니다: {exc}"
+
         from .uia.core import UiaUnavailableError, build_tree, element_from_hwnd
 
         try:
@@ -146,6 +164,29 @@ class WindowSession:
             return build_win32_tree(
                 self.hwnd, max_depth=options.max_depth, max_nodes=options.max_nodes
             )
+
+    def _is_office_process(self) -> bool:
+        from .office.core import ADAPTERS
+
+        return (self.info.process or "").lower() in ADAPTERS
+
+    def _build_office_tree(self, options: SnapshotOptions):
+        """Reach the document through the application's own object model.
+
+        Run on the COM worker for the same reason UIA is: the objects belong to
+        an apartment, and calling them from whichever thread happens to ask
+        would marshal badly or fail outright.
+        """
+
+        from .office.core import build_office_tree
+        from .uia.core import get_worker
+
+        return get_worker().call(
+            build_office_tree,
+            self.hwnd,
+            self.info.process,
+            max_nodes=options.max_nodes,
+        )
 
     def _header(self) -> str:
         info = self.refresh_info()
@@ -272,8 +313,10 @@ class SessionManager:
         exact_title: bool = False,
         engine: str = "auto",
     ) -> WindowSession:
-        if engine not in {"auto", "uia", "win32"}:
-            raise ClaudeHandsError(f"engine 은 auto/uia/win32 중 하나여야 합니다: {engine!r}")
+        if engine not in {"auto", "uia", "win32", "office"}:
+            raise ClaudeHandsError(
+                f"engine 은 auto/uia/win32/office 중 하나여야 합니다: {engine!r}"
+            )
         info = find_window(
             hwnd=hwnd, title=title, process=process, pid=pid, exact_title=exact_title
         )
