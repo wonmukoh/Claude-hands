@@ -72,7 +72,7 @@ class Report:
         self.cursor_before = cursor_pos()
         self.foreground_before = foreground_hwnd()
 
-    def violations(self) -> list[str]:
+    def violations(self, *, releasing: int | None = None) -> list[str]:
         found = []
         now = cursor_pos()
         if now != self.cursor_before:
@@ -80,14 +80,42 @@ class Report:
             found.append(f"커서 {self.cursor_before} → {now}")
         front = foreground_hwnd()
         if front != self.foreground_before:
-            self.foreground_changed = True
-            found.append(f"전경 창 {self.foreground_before} → {front}")
+            # Minimising the window that currently holds the foreground makes
+            # Windows hand the foreground to somebody else — there is no way
+            # to honour "minimise this" and keep it. That is the caller's own
+            # request taking effect, not the tool taking anything. What stays
+            # a violation is the attached window *becoming* foreground, and
+            # any foreground change we did not ask for.
+            released = (
+                releasing is not None
+                and self.foreground_before == releasing
+                and front != releasing
+            )
+            if released:
+                found.append(f"(요청대로 전경을 놓음: {self.foreground_before} → {front})")
+            else:
+                self.foreground_changed = True
+                found.append(f"전경 창 {self.foreground_before} → {front}")
         self.cursor_before = now
         self.foreground_before = front
         return found
 
-    def record(self, name: str, ok: bool, detail: str = "", *, strict: bool = True) -> Check:
-        problems = self.violations()
+    def record(
+        self,
+        name: str,
+        ok: bool,
+        detail: str = "",
+        *,
+        strict: bool = True,
+        releasing: int | None = None,
+    ) -> Check:
+        observed = self.violations(releasing=releasing)
+        # Entries in parentheses are noted, not charged: they record a change
+        # the caller explicitly asked for.
+        problems = [p for p in observed if not p.startswith("(")]
+        notes = [p for p in observed if p.startswith("(")]
+        if notes:
+            detail = (detail + " / " if detail else "") + "; ".join(notes)
         if problems and strict:
             ok = False
             detail = (detail + " / " if detail else "") + "사용자 입력을 가로챔: " + "; ".join(problems)
@@ -160,7 +188,10 @@ def pick_editor(app):
                 continue
             if "value" not in node.patterns:
                 continue
-            if node.rect.width < 120 or node.rect.height < 40:
+            # An ordinary single-line edit box is about 26px tall. An earlier
+            # floor of 40 was picked to dodge PowerPoint's ribbon and threw
+            # away every normal text field with it.
+            if node.rect.width < 80 or node.rect.height < 18:
                 continue
             candidates.append(node)
     if not candidates:
@@ -189,13 +220,21 @@ def probe_reading(app, report: Report, phase: str) -> list:
     return nodes
 
 
-def run(process: str, engine: str, write: bool, keep_open: bool) -> int:
+def run(process: str | None, title: str | None, engine: str, write: bool, keep_open: bool) -> int:
     if not IS_WINDOWS:
         print("Windows(또는 Wine) 에서만 의미가 있습니다. 현재:", sys.platform)
         return 2
 
+    selector = ", ".join(
+        part
+        for part in (
+            f"process={process!r}" if process else None,
+            f"title~{title!r}" if title else None,
+        )
+        if part
+    )
     print("=" * 70)
-    print(f"claude-hands 실기검증 — process={process!r} engine={engine}")
+    print(f"claude-hands 실기검증 — {selector} engine={engine}")
     print("=" * 70)
     report = Report()
     from claude_hands import DPI_AWARENESS
@@ -205,12 +244,22 @@ def run(process: str, engine: str, write: bool, keep_open: bool) -> int:
 
     # 0. 탐지
     print("[0] 창 탐지")
-    found = windows(process=process)
+    # Selecting by title matters when the process name is not enough to say
+    # which window is safe to write into — one Notepad holding someone's file
+    # and one holding a scratch file are the same process.
+    query = {}
+    if process:
+        query["process"] = process
+    if title:
+        query["title_contains"] = title
+    found = windows(**query)
     if not found:
-        print(f"  {process!r} 창을 찾지 못했습니다. 열려 있는 창:")
+        print(f"  {selector} 창을 찾지 못했습니다. 열려 있는 창:")
         for info in windows()[:12]:
             print("   ", info.describe())
         return 2
+    if len(found) > 1:
+        print(f"  경고: {len(found)}개가 일치합니다. 첫 번째를 씁니다 — --title 로 좁히세요.")
     for info in found:
         print("   ", info.describe())
     report.record("창 탐지", True, found[0].describe())
@@ -324,7 +373,12 @@ def run(process: str, engine: str, write: bool, keep_open: bool) -> int:
     try:
         app.minimize()
         time.sleep(0.8)
-        report.record("창이 최소화됨", is_minimized(app.hwnd), f"상태={app.info.state}")
+        report.record(
+            "창이 최소화됨",
+            is_minimized(app.hwnd) and foreground_hwnd() != app.hwnd,
+            f"상태={app.info.state}",
+            releasing=app.hwnd,
+        )
     except ClaudeHandsError as exc:
         report.fail("최소화", exc)
 
@@ -399,19 +453,34 @@ def run(process: str, engine: str, write: bool, keep_open: bool) -> int:
     except ClaudeHandsError as exc:
         report.fail("복원", exc)
 
+    # The contract is one-directional: the tool may cause the attached window
+    # to lose the foreground (that is what "minimise this" means), but it must
+    # never put it in front. Stated once, plainly, so no per-step allowance can
+    # quietly add up to focus stealing.
+    front = foreground_hwnd()
+    report.record(
+        "도구가 대상 창을 전경으로 끌어내지 않음",
+        front != app.hwnd,
+        f"현재 전경 hwnd={front}, 대상 hwnd={app.hwnd}",
+        strict=False,
+    )
+
     return report.summary()
 
 
 def main() -> int:
     force_utf8_output()
     parser = argparse.ArgumentParser(description="실행 중인 창으로 claude-hands 검증")
-    parser.add_argument("--process", default="notepad", help="대상 실행 파일 이름 일부")
+    parser.add_argument("--process", default=None, help="대상 실행 파일 이름 일부")
+    parser.add_argument("--title", default=None, help="대상 창 제목 일부 (여러 창이 같은 프로세스일 때)")
     parser.add_argument("--engine", default="auto", choices=["auto", "uia", "win32"])
     parser.add_argument("--no-write", action="store_true", help="읽기만 수행")
     parser.add_argument("--keep-minimized", action="store_true", help="끝나도 복원하지 않음")
     args = parser.parse_args()
+    if not args.process and not args.title:
+        parser.error("--process 나 --title 중 하나는 주어야 합니다. 아무 창이나 고르면 남의 문서에 씁니다.")
     try:
-        return run(args.process, args.engine, not args.no_write, args.keep_minimized)
+        return run(args.process, args.title, args.engine, not args.no_write, args.keep_minimized)
     except Exception:  # noqa: BLE001 - 검증기는 무엇이든 보고해야 합니다
         traceback.print_exc()
         return 1
