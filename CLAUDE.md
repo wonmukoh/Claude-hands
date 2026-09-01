@@ -35,6 +35,7 @@ src/claude_hands/
   win32/controls.py  창 메시지 폴백 엔진 (HWND 컨트롤 → 패턴 프로토콜)
   win32/menus.py     실제 메뉴바 읽기 · WM_COMMAND 실행
   uia/core.py        COM 워커 스레드 · 요소 래퍼 · 캐시 트리 구축
+  office/core.py     Office 문서 모델 엔진 (PowerPoint · Word · Excel)
   elements.py        트리 모델 · 가지치기 · 렌더링 · 검색   (플랫폼 무관)
   session.py         창 세션 · ref 레지스트리 · 자동 재연결 · 엔진 선택
   actions.py         클릭/입력/스크롤 … 전략 체인
@@ -43,18 +44,40 @@ src/claude_hands/
   cli.py             명령줄
 ```
 
-**엔진이 둘입니다.** `uia`(기본, 풍부함)와 `win32`(창 메시지만, COM 불필요).
-`actions.py` 의 전략 체인 하나가 둘 다 굴립니다 — `win32/controls.py` 가 UIA 와
-같은 패턴 프로토콜(`invoke`/`value`/`toggle`)을 창 메시지로 구현하기 때문입니다.
-결과에는 실제로 어느 엔진이 처리했는지 표시됩니다(`win32:invoke` 처럼).
+**엔진이 셋입니다.**
+
+| 엔진 | 보는 것 | 문서 편집 | 쓰는 때 |
+|---|---|---|---|
+| `office` | 열린 문서의 개체 모델 | **됨** | PowerPoint · Word · Excel |
+| `uia` | UI Automation 트리 | 앱마다 다름 | 기본 |
+| `win32` | HWND 를 가진 컨트롤 | 편집 컨트롤만 | COM 을 못 쓸 때 |
+
+`actions.py` 의 전략 체인 하나가 셋 다 굴립니다 — 세 엔진 모두 같은 패턴
+프로토콜(`invoke`/`value`/`toggle`)을 각자의 수단으로 구현하기 때문입니다.
+결과에는 실제로 어느 엔진이 처리했는지 표시됩니다(`win32:invoke`,
+`office:value.SetValue` 처럼).
+
+`auto` 는 대상이 Office 프로세스면 `office` 를 먼저 씁니다. 그래야 슬라이드에
+글자를 넣을 수 있습니다(교훈 10). 문서 모델을 못 쓰면 UIA 로, UIA 도 못 쓰면
+창 메시지로 내려가고, 내려간 이유는 스냅샷 머리글에 적힙니다.
 
 ## 검증하는 법
 
 ```bash
-pytest -q                                    # 134개, 어느 OS에서나
-python examples/verify_live.py --process notepad --engine win32
-python examples/verify_live.py --process POWERPNT --engine uia
+pytest -q                                    # 159개, 어느 OS에서나
+
+# 남의 파일에 쓰지 않기 위한 전용 대상 창 (입력란·체크박스·대화상자 버튼)
+python examples/target_app.py
+python examples/verify_live.py --title "claude-hands 검증 대상" --engine win32
+
+python examples/verify_live.py --process POWERPNT --engine uia --no-write
 ```
+
+**`--write` 검증은 대상 창의 실제 문서를 바꿉니다.** `--process` 는 같은 이름의
+창이 여럿이면 아무거나 고르므로, 쓰기 검증에는 `--title` 로 좁히거나
+`target_app.py` 를 쓰세요. Windows 11 메모장은 세션을 복원해서 그냥 띄우기만 해도
+사용자의 파일이 열립니다 — 실제로 `.env.local` 이 열렸습니다. 메모장을 만만한
+대상으로 여기지 마세요.
 
 테스트는 COM/ctypes 경계만 대역으로 바꾸고 그 아래 로직은 실제로 실행합니다.
 `tests/test_action_chains.py` 는 어떤 동작이 어떤 전략을 고르는지, 패턴이 거절할 때
@@ -159,9 +182,18 @@ PowerPoint 에서 value 패턴을 가진 요소는 리본의 `Microsoft Search`(
 존재하지 않습니다.** `pick_editor` 를 아무리 손봐도 안 됩니다 — 역할 목록의
 문제가 아닙니다.
 
-읽기·클릭·캡처는 전부 됩니다. 슬라이드 텍스트 입력만 이 도구의 사정권 밖이고,
-그건 도형을 선택 상태로 만든 뒤 포커스 입력을 써야 하는데 계약 2번과
-교훈 5번에 정면으로 걸립니다. 하려면 그 대가를 먼저 인정하고 시작하세요.
+읽기·클릭·캡처는 전부 됩니다. `pick_editor` 를 아무리 손봐도 슬라이드는 안
+잡힙니다.
+
+**해결됐습니다 — UI 를 통하지 않으면 됩니다.** `office` 엔진이 PowerPoint 의
+개체 모델에 직접 붙어 `Shape.TextFrame.TextRange.Text` 를 읽고 씁니다. 화면을
+전혀 거치지 않으므로 최소화 상태에서도 되고, 커서·포커스를 건드릴 수단 자체가
+없습니다. 실측: 최소화된 창의 슬라이드에 한글을 쓰고 바이트 단위로 되읽음,
+전경 변화 0회.
+
+즉 "UIA 로 안 되면 못 하는 일" 이 아니라 "UIA 가 볼 수 있는 층이 아니었을 뿐"
+이었습니다. 다른 앱에서도 막히면 그 앱이 자동화 인터페이스를 내놓는지 먼저
+보세요.
 
 ### 11. 최소화된 창은 `IsWindowVisible` 을 유지합니다
 
@@ -188,6 +220,41 @@ PowerPoint 에서 value 패턴을 가진 요소는 리본의 `Microsoft Search`(
 합니다. 건너뛴 구간을 그대로 두면 그 사이 사람이 만진 마우스가 도구 탓이
 됩니다 — 실제로 읽기 전용 `find()` 가 그렇게 FAIL 났습니다.
 
+### 13. Office 는 "사용 중" 이라고 답합니다 — 그건 거절이 아니라 "아직" 입니다
+
+문서를 여는 중이거나 모달 상태면 COM 호출이
+`RPC_E_SERVERCALL_RETRYLATER`(-2147417846) 나 `RPC_E_CALL_REJECTED` 로 튕깁니다.
+실측: 방금 연 37장짜리 덱이 첫 `Shapes.Item` 을 그대로 거절했습니다. 문서를 여는
+중인 창은 `HWND` 조차 `DISP_E_MEMBERNOTFOUND` 로 답합니다.
+
+`office/core.py` 의 `com_retry` 가 **바쁨만** 재시도합니다. 없는 도형이나 닫힌
+문서까지 재시도하면 같은 오류를 여섯 배 느리게 보고할 뿐입니다. 창을 못 찾는
+경우는 탐색 전체를 몇 번 다시 돕니다 — 자기 소개를 못 하는 창은 건너뛰므로
+한 번만 훑으면 곧 나타날 문서를 놓칩니다.
+
+### 14. 문서 창의 HWND 는 우리가 붙은 창이 아닙니다
+
+`DocumentWindow.HWND` 는 프레임이 아니라 문서 창의 핸들입니다. 실측:
+PowerPoint 가 문서에 2953710 을 주는데 프레임은 10622250 이었습니다. 그대로
+비교하면 **아무 문서도 안 맞습니다.** `GetAncestor(hwnd, GA_ROOT)` 로 올라가서
+비교하세요.
+
+철자도 앱마다 다릅니다 — PowerPoint 는 `HWND`, Word·Excel 은 `Hwnd`.
+
+이 매칭이 **사용자의 다른 문서를 안 건드린다는 유일한 보장**입니다. 실제로
+검증 중에 사용자가 같은 PowerPoint 에 자기 발표자료를 열었는데, HWND 로만
+고르기 때문에 아무 일도 없었습니다. "활성 문서"(`ActivePresentation`)를 쓰면
+그 순간 남의 파일에 씁니다. 절대 쓰지 마세요.
+
+### 15. `SW_MINIMIZE` 가 전경을 놓는다는 보장은 없습니다
+
+최소화한 뒤에도 `GetForegroundWindow()` 가 그 창을 계속 가리키는 경우가
+있습니다(실측 3/3). 그래서 "최소화했으니 전경이 바뀌었겠지" 라고 가정하면
+안 되고, 반대로 최소화 때문에 전경이 바뀐 것을 도구 탓으로 돌려도 안 됩니다.
+
+검증기는 그래서 방향을 나눠 봅니다: 대상 창이 전경을 **놓는** 것은 요청의
+결과라 허용하고, 대상 창이 전경이 **되는** 것만 위반으로 셉니다.
+
 ## 지금까지 검증된 것
 
 Wine 위 Windows CPython 으로 실행 중인 Win32 프로그램(메모장·winecfg) 상대,
@@ -206,6 +273,31 @@ UIA 초기화 성공, DPI per-monitor-v2, UI 트리 **203개** 요소(보임 0.3
 `list_windows` 는 같은 데스크톱에서 21개 → 9개가 되었습니다. 사라진 12개는 전부
 사용자에게 보이지 않는 보조 창이고, 진짜 창은 하나도 잃지 않았습니다.
 
+### `--write` 실기검증 (전용 대상 창, win32 엔진) — **15/15 통과**
+
+`examples/target_app.py` 상대로 최소화 상태 입력·되읽기, 체크박스 토글, 캡처,
+기하 보존까지 전부. 방식은 `win32:value.SetValue`. 커서 이동 0, 전경 변경 0.
+
+한 번은 `[7] 최소화 캡처` 에서 전경이 대상 창으로 옮겨간 적이 있습니다
+(대상이 시작 시 전경이던 실행). **7회 재시도에도 재현되지 않았습니다.**
+`capture_window` 단독 3회, 복원 순서 단계별 측정 모두 깨끗했습니다. 고친 것이
+아니라 못 잡은 것이므로 그대로 적어 둡니다 — 재발하면 새로 넣은
+"도구가 대상 창을 전경으로 끌어내지 않음" 검사가 잡습니다.
+
+### `office` 엔진 실기검증 — PowerPoint · Word · Excel **전부 통과**
+
+셋 다 `auto` 가 `office` 를 골랐고, 셋 다 **창을 최소화한 채로** 문서에 한글을
+쓰고 그대로 되읽었습니다. 방식은 `office:value.SetValue`, 전경 변경 0회.
+
+| 앱 | 트리 | 쓴 대상 |
+|---|---|---|
+| PowerPoint | document → 슬라이드 → 도형 | `TextBox 4` (슬라이드 위 텍스트) |
+| Word | document → 문단 | `문단 1` |
+| Excel | document → 시트 → 셀 | `A1` |
+
+읽기 5회 반복 커서 이동 0회. 쓰기 구간에 찍힌 커서 값은 연속적으로 조금씩
+흐르는 모양이라 사람의 마우스입니다 — COM 에는 커서를 움직일 수단이 없습니다.
+
 ## 여기서 이어서 하세요
 
 앞 세션이 남긴 세 가지는 끝났습니다. 무엇을 고쳤는지는 교훈 9·10 과 아래를
@@ -220,18 +312,21 @@ UIA 초기화 성공, DPI per-monitor-v2, UI 트리 **203개** 요소(보임 0.3
   `IsIconic` 을 믿으면 안 됩니다(교훈 11).
 - 편집 대상 선택이 슬라이드를 잡는지 — 잡을 수 없음이 확인됐습니다(교훈 10).
 
-**아직 안 해 본 것 — `--write` 실기검증.** 위 결과는 전부 `--no-write` 입니다.
-쓰기 검증은 대상 창의 실제 문서를 건드리므로 **버리는 파일을 열어 놓고** 돌리세요.
-남의 작업 파일에 돌리지 마세요.
+- `--write` 실기검증 — 완료(15/15). 전용 대상 창을 만들어 돌립니다.
+- PowerPoint 슬라이드 편집 — 완료. `office` 엔진으로 됩니다(교훈 10).
 
-```
-python examples\verify_live.py --process POWERPNT --engine uia
-python examples\verify_live.py --process notepad --engine win32
-```
+**다음에 할 만한 것.**
 
-PowerPoint 는 교훈 10 때문에 `[3] 편집 영역 입력` 이 SKIP 으로 남습니다. 그게
-정상입니다. 입력 경로를 실제로 검증하려면 메모장처럼 값 패턴을 노출하는
-프로그램을 쓰세요.
+- **한글(HWP).** `HWPFrame.HwpObject` 가 이 PC 에 설치되어 있습니다. 어댑터를
+  하나 더 붙이면 같은 방식으로 다뤄집니다. API 모양이 Office 와 달라
+  (`XHwpDocuments`, `GetFieldText`/`PutFieldText`) 그대로 베낄 수는 없습니다.
+  **확인 안 함** — 실제로 붙여 보고 적으세요.
+- **`office` 엔진의 클릭.** 지금은 `value` 패턴만 구현했습니다. 도형 선택은
+  `Shape.Select()` 인데 그게 창을 활성화시키므로 계약 2번에 걸립니다. 넣으려면
+  활성화하지 않는 경로를 먼저 찾으세요. 못 찾으면 넣지 마세요.
+- **큰 문서의 속도.** 37장 덱이 259개 노드이고 노드마다 프로세스 간 호출이
+  붙습니다. 슬라이드 단위 지연 로딩이 필요할 수 있습니다.
+- **재현 못 한 전경 이동 1건** (위 참고).
 
 ## 스타일
 
