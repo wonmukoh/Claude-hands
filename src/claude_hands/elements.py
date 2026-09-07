@@ -88,6 +88,12 @@ class NodeInfo:
     def is_interesting(self) -> bool:
         if self.is_actionable:
             return True
+        if self.truncated_children:
+            # A container that was deliberately left closed is the one node the
+            # caller needs in order to open it. Judging it by what it holds
+            # drops it for holding nothing — measured: asking a 37-slide deck
+            # for an outline returned the document and no slides at all.
+            return True
         if self.has_content and self.role not in {"pane", "group"}:
             return True
         if self.role in {"edit", "combobox", "document"}:

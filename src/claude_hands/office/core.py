@@ -203,6 +203,18 @@ class OfficeElement:
         self.help_text = help_text
         self.hwnd = hwnd
 
+    # The session decides whether a ref still points at something by reading
+    # these. Without them the reads raise, every element looks dead, and each
+    # action re-walks the whole document — measured at twelve seconds to read
+    # one slide of a 37-slide deck that was already in the tree.
+    @property
+    def rect(self) -> Optional[Rect]:
+        return self._rect
+
+    @property
+    def enabled(self) -> bool:
+        return True
+
     # -- pattern protocol -------------------------------------------------
     def pattern(self, key: str) -> Any:
         if key == "value" and self._read is not None:
@@ -226,8 +238,8 @@ class OfficeElement:
             name=self.name,
             value=self.value() if patterns else "",
             class_name="office",
-            rect=self._rect,
-            enabled=True,
+            rect=self.rect,
+            enabled=self.enabled,
             offscreen=False,
             focusable=False,
             hwnd=self.hwnd,
@@ -278,12 +290,14 @@ class PowerPointAdapter:
             if budget.spent():
                 return
             slide = com_retry(lambda index=index: document.Slides.Item(index))
-            slide_node = emit(
-                OfficeElement(role="group", name=f"슬라이드 {index}"),
-                depth=1,
-                parent=None,
-            )
+            name = f"슬라이드 {index}"
+            slide_node = emit(OfficeElement(role="group", name=name), depth=1, parent=None)
             shape_count = com_retry(lambda slide=slide: slide.Shapes.Count)
+            if not budget.allows(2, name):
+                # Counting the shapes is one call; fetching them is one call
+                # each. Say how many are down there and stop.
+                slide_node.truncated_children = shape_count
+                continue
             for j in range(1, shape_count + 1):
                 if budget.spent():
                     return
@@ -410,10 +424,13 @@ class ExcelAdapter:
             if budget.spent():
                 return
             sheet = document.Worksheets.Item(i)
-            sheet_node = emit(
-                OfficeElement(role="group", name=str(sheet.Name)), depth=1, parent=None
-            )
+            name = str(sheet.Name)
+            sheet_node = emit(OfficeElement(role="group", name=name), depth=1, parent=None)
             used = sheet.UsedRange
+            if not budget.allows(2, name):
+                slide_node_count = com_retry(lambda used=used: used.Count)
+                sheet_node.truncated_children = int(slide_node_count or 0)
+                continue
             for cell in used:
                 if budget.spent():
                     return
@@ -447,12 +464,34 @@ ADAPTERS = {
 
 
 class _Budget:
-    def __init__(self, max_nodes: int) -> None:
+    """How much of the document to walk.
+
+    Depth costs more here than in the other engines. A UI tree is already in
+    the target's memory; a document tree is a cross-process call per node.
+    Measured on a 37-slide deck: walking it in full is 859 nodes, 47,000
+    characters and about ten seconds, and `max_depth` was not reaching this
+    engine at all, so asking for an outline bought the whole thing.
+
+    Refusing to descend is therefore not a rendering nicety. It is what makes
+    an outline affordable, and `expand` is how one container is opened without
+    paying for the other thirty-six.
+    """
+
+    def __init__(self, max_nodes: int, max_depth: int = 12, expand: str | None = None) -> None:
         self.max_nodes = max_nodes
+        self.max_depth = max_depth
+        self.expand = (expand or "").strip().lower()
         self.count = 0
 
     def spent(self) -> bool:
         return self.count >= self.max_nodes
+
+    def allows(self, depth: int, container: str = "") -> bool:
+        """Whether to walk into ``container``, which sits at ``depth``."""
+
+        if self.expand and container and self.expand in container.lower():
+            return True
+        return depth <= self.max_depth
 
 
 # --------------------------------------------------------------------------
@@ -472,7 +511,14 @@ def _running_application(progid: str):
         ) from exc
 
 
-def build_office_tree(hwnd: int, process: str, *, max_nodes: int = 800):
+def build_office_tree(
+    hwnd: int,
+    process: str,
+    *,
+    max_nodes: int = 800,
+    max_depth: int = 12,
+    expand: str | None = None,
+):
     """Build a NodeInfo tree for the document shown in ``hwnd``.
 
     Mirrors :func:`claude_hands.win32.controls.build_win32_tree` so a session
@@ -514,7 +560,7 @@ def build_office_tree(hwnd: int, process: str, *, max_nodes: int = 800):
         )
 
     element_index: dict[int, OfficeElement] = {}
-    budget = _Budget(max_nodes)
+    budget = _Budget(max_nodes, max_depth=max_depth, expand=expand)
 
     root_element = OfficeElement(
         role="document",

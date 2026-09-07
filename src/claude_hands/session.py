@@ -50,6 +50,10 @@ class SnapshotOptions:
     show_rect: bool = True
     keep_offscreen: bool = False
     interactive_only: bool = False
+    # Name of one container to open past `max_depth`. Only the Office engine
+    # reads it, because only there does descending cost a round trip per node:
+    # it is how you read slide 5 without enumerating the other thirty-six.
+    expand: Optional[str] = None
 
 
 @dataclass
@@ -189,6 +193,8 @@ class WindowSession:
             self.hwnd,
             self.info.process,
             max_nodes=options.max_nodes,
+            max_depth=options.max_depth,
+            expand=options.expand,
         )
 
     def _header(self) -> str:

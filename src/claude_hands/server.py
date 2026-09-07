@@ -204,18 +204,27 @@ async def snapshot(
     depth: int = 12,
     max_lines: int = 400,
     show_coordinates: bool = True,
+    expand: str | None = None,
 ) -> str:
     """연결된 창의 UI 트리를 읽어 각 요소에 ref 를 붙여 돌려줍니다.
 
-    화면 캡처가 아니라 UI Automation 트리라서, 창이 최소화되어 있어도 정확히 읽힙니다.
+    화면 캡처가 아니라 UI 트리라서, 창이 최소화되어 있어도 정확히 읽힙니다.
     출력의 [e12] 같은 값이 ref 이며 click_element 등에 그대로 넣으면 됩니다.
+    한 번 받은 ref 는 이 연결이 살아 있는 동안 같은 요소를 계속 가리킵니다.
+
+    **Office 문서는 depth 를 꼭 쓰세요.** 문서 트리는 노드마다 프로세스 간 호출이
+    붙어서, 37장짜리 발표자료를 통째로 읽으면 859개 노드에 5만 자, 10초가 듭니다.
+    depth=1 이면 슬라이드(시트) 목록만 나오고, 그다음 expand 로 필요한 하나만
+    펼치면 됩니다.
 
     Args:
         hwnd: 다른 창을 지정하려면 입력 (생략하면 마지막에 연결한 창).
         interactive_only: True 면 누를 수 있는 요소만 평면 목록으로 보여줍니다.
-        depth: 트리 탐색 최대 깊이.
+        depth: 트리 탐색 최대 깊이. Office 문서에서 1 이면 목차만.
         max_lines: 출력 줄 수 상한.
         show_coordinates: 각 요소의 화면 좌표/크기 표시 여부.
+        expand: depth 를 넘어서 펼칠 항목 이름 (예: "슬라이드 5", "Sheet1").
+            Office 문서 전용이며, 나머지는 접힌 채로 두어 비용을 아낍니다.
     """
 
     try:
@@ -227,6 +236,7 @@ async def snapshot(
                 max_lines=max_lines,
                 interactive_only=interactive_only,
                 show_rect=show_coordinates,
+                expand=expand,
             ),
         )
     except ClaudeHandsError as exc:

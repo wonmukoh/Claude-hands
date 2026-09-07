@@ -119,6 +119,40 @@ def test_a_picture_offers_no_patterns_at_all():
     assert element.to_node_info().patterns == ()
 
 
+def test_an_element_answers_the_liveness_questions_the_session_asks():
+    """Without these the session thinks every ref is dead and re-walks the document.
+
+    Measured before the properties existed: reading one slide of a 37-slide
+    deck already held in the tree took twelve seconds, because resolving the
+    ref rebuilt the whole thing.
+    """
+
+    from claude_hands.session import WindowSession
+    from claude_hands.win32.windows import Rect, WindowInfo
+
+    element = core.OfficeElement(
+        role="edit", name="TextBox 4", rect=Rect(0, 0, 100, 40), read=lambda: "글"
+    )
+    assert element.rect == Rect(0, 0, 100, 40)
+    assert element.enabled is True
+
+    session = WindowSession(
+        hwnd=1,
+        info=WindowInfo(
+            hwnd=1,
+            title="발표.pptx",
+            class_name="",
+            pid=1,
+            process="powerpnt.exe",
+            rect=Rect(0, 0, 1, 1),
+            minimized=False,
+            maximized=False,
+            visible=True,
+        ),
+    )
+    assert session._element_alive(element) is True
+
+
 # -- building the tree ------------------------------------------------------
 
 
@@ -147,6 +181,9 @@ class FakeAdapter:
             if budget.spent():
                 return
             slide = emit(core.OfficeElement(role="group", name=slide_name), depth=1, parent=None)
+            if not budget.allows(2, slide_name):
+                slide.truncated_children = len(shapes)
+                continue
             for shape_name in shapes:
                 if budget.spent():
                     return
@@ -156,6 +193,15 @@ class FakeAdapter:
                     parent=slide,
                 )
 
+
+DECK = {
+    "name": "발표.pptx",
+    "slides": [
+        ("슬라이드 1", ["TextBox 1", "TextBox 2"]),
+        ("슬라이드 5", ["TextBox 3", "Picture 4", "TextBox 5"]),
+        ("슬라이드 9", ["TextBox 6"]),
+    ],
+}
 
 MINE = {"name": "내문서.pptx", "slides": [("슬라이드 1", ["TextBox 4", "TextBox 5"])]}
 THEIRS = {"name": "남의문서.pptx", "slides": [("슬라이드 1", ["건드리면 안 되는 것"])]}
@@ -217,3 +263,87 @@ def test_text_shapes_carry_the_value_pattern_so_actions_can_type(office):
     shape = root.children[0].children[0]
     assert "value" in shape.patterns
     assert shape.is_actionable
+
+
+# -- how much of the document to walk ---------------------------------------
+#
+# Depth is not cosmetic here. Every node is a cross-process call, and a real
+# 37-slide deck measured 859 nodes and fifteen seconds walked in full against
+# 38 nodes and half a second for the outline. `max_depth` was reaching this
+# engine as nothing at all, so asking for an outline bought the whole deck.
+
+
+def test_an_outline_lists_the_slides_without_opening_them(office):
+    install(office, [(901, DECK)])
+    root, _ = core.build_office_tree(900, "fake.exe", max_depth=1)
+
+    assert [s.name for s in root.children] == ["슬라이드 1", "슬라이드 5", "슬라이드 9"]
+    assert all(s.children == [] for s in root.children)
+    assert [s.truncated_children for s in root.children] == [2, 3, 1]
+
+
+def test_a_closed_slide_survives_pruning_so_it_can_be_opened(office):
+    """It holds nothing, and it is exactly the node the caller needs."""
+
+    from claude_hands.elements import prune
+
+    install(office, [(901, DECK)])
+    root, _ = core.build_office_tree(900, "fake.exe", max_depth=1)
+    kept = prune(root, keep_offscreen=False) or root
+
+    assert [s.name for s in kept.children] == ["슬라이드 1", "슬라이드 5", "슬라이드 9"]
+
+
+def test_expand_opens_one_slide_and_leaves_the_rest_closed(office):
+    install(office, [(901, DECK)])
+    root, _ = core.build_office_tree(900, "fake.exe", max_depth=1, expand="슬라이드 5")
+
+    by_name = {s.name: s for s in root.children}
+    assert [c.name for c in by_name["슬라이드 5"].children] == [
+        "TextBox 3",
+        "Picture 4",
+        "TextBox 5",
+    ]
+    assert by_name["슬라이드 5"].truncated_children == 0
+    assert by_name["슬라이드 1"].children == []
+    assert by_name["슬라이드 9"].children == []
+
+
+def test_expand_matches_case_insensitively(office):
+    install(office, [(901, DECK)])
+    root, _ = core.build_office_tree(900, "fake.exe", max_depth=1, expand="SHEET")
+    assert all(s.children == [] for s in root.children), "일치하는 게 없으면 아무것도 안 열립니다"
+
+    deck = {"name": "x.xlsx", "slides": [("Sheet1", ["A1"])]}
+    install(office, [(901, deck)])
+    root, _ = core.build_office_tree(900, "fake.exe", max_depth=1, expand="sheet1")
+    assert [c.name for c in root.children[0].children] == ["A1"]
+
+
+def test_the_default_depth_still_walks_the_whole_document(office):
+    install(office, [(901, DECK)])
+    root, _ = core.build_office_tree(900, "fake.exe")
+    assert [len(s.children) for s in root.children] == [2, 3, 1]
+    assert all(s.truncated_children == 0 for s in root.children)
+
+
+def test_an_opened_slide_keeps_the_refs_the_full_walk_gave_it(office):
+    """Reading the outline then opening one slide must not renumber anything."""
+
+    from claude_hands.elements import assign_refs
+
+    install(office, [(901, DECK)])
+    known = {}
+
+    full, _ = core.build_office_tree(900, "fake.exe")
+    assign_refs(full, known=known)
+    wanted = {
+        (s.name, c.name): c.ref for s in full.children for c in s.children
+    }
+
+    partial, _ = core.build_office_tree(900, "fake.exe", max_depth=1, expand="슬라이드 5")
+    assign_refs(partial, known=known)
+    got = {(s.name, c.name): c.ref for s in partial.children for c in s.children}
+
+    assert got, "슬라이드 5 는 열려 있어야 합니다"
+    assert all(wanted[key] == ref for key, ref in got.items())
