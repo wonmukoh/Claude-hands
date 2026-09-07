@@ -456,6 +456,8 @@ class ExcelAdapter:
         return bool(document.Saved)
 
 
+# hwp.py imports from this module, so it registers itself from the package's
+# __init__ rather than being listed here.
 ADAPTERS = {
     "powerpnt.exe": PowerPointAdapter,
     "winword.exe": WordAdapter,
@@ -533,7 +535,10 @@ def build_office_tree(
             f"지원: {', '.join(sorted(ADAPTERS))}"
         )
 
-    app = _running_application(adapter.progid)
+    # Most applications answer to their ProgID. 한글 does not, and brings its
+    # own way in.
+    acquire = getattr(adapter, "acquire", None)
+    app = acquire() if acquire else _running_application(adapter.progid)
 
     # Match on the frame window, because that is what the caller attached to.
     # The search is retried as a whole: a window that is mid-open cannot answer

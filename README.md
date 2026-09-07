@@ -41,7 +41,7 @@ Windows UI Automation 으로 "저 버튼의 Invoke 를 실행해라" 라고 애�
 
 | 엔진 | 보는 것 | COM 필요 | 쓰는 때 |
 |---|---|---|---|
-| `office` | 열린 문서의 개체 모델 (슬라이드·문단·셀) | 필요 | PowerPoint · Word · Excel |
+| `office` | 열린 문서의 개체 모델 (슬라이드·문단·셀·누름틀) | 필요 | PowerPoint · Word · Excel · 한글 |
 | `uia` | UI Automation 트리 (그려진 모든 요소) | 필요 | 기본 |
 | `win32` | 실제 창 핸들을 가진 컨트롤만 | 불필요 | UIA 를 못 쓸 때 |
 

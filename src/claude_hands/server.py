@@ -45,7 +45,7 @@ READ_ONLY = os.environ.get("CLAUDE_HANDS_READONLY", "").lower() in {"1", "true",
 
 # Kept here rather than imported from the office engine so that listing a window
 # never pulls the COM stack in behind it.
-OFFICE_PROCESSES = {"powerpnt.exe", "winword.exe", "excel.exe"}
+OFFICE_PROCESSES = {"powerpnt.exe", "winword.exe", "excel.exe", "hwp.exe"}
 
 mcp = _Server(
     "claude-hands",
