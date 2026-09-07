@@ -298,6 +298,36 @@ def type_text(
         raise ActionFailedError(f"{label} 은(는) 비활성 상태라 입력할 수 없습니다.")
 
     engine = _engine(element)
+
+    def took(pattern, expected: str) -> bool:
+        """Did the write land, as far as the control will say?
+
+        A set that returns without raising has not necessarily done anything —
+        measured: `legacy.SetValue` on a button reports success and changes
+        nothing, so `type_text` answered "입력 완료" for a control that cannot
+        hold text. Text is one of the few things that can be checked, so it is.
+
+        A control that will not report its value at all counts as success: the
+        write may well have landed, and turning an unverifiable call into a
+        failure would break the ones that work.
+        """
+
+        try:
+            actual = _call(element, lambda: pattern.CurrentValue)
+        except Exception:  # noqa: BLE001 - no readback available
+            return True
+        if actual is None:
+            return True
+        actual = str(actual)
+        if expected and not actual:
+            # Nothing came back where something was just written. An empty
+            # string is "in" every string, so a plain containment test calls
+            # this a success — which is how a button reported 입력 완료.
+            return False
+        # Controls reformat what they are given — trimming, padding a number,
+        # truncating at a maximum length — so containment rather than equality.
+        return expected in actual or actual in expected
+
     value_pattern = element.pattern("value")
     if value_pattern is not None:
         set_value_label = f"{engine}:value.SetValue"
@@ -312,6 +342,8 @@ def type_text(
                 raise ActionFailedError("읽기 전용 필드입니다.")
             new_text = text if clear else (node.value or "") + text
             _call(element, lambda: value_pattern.SetValue(new_text))
+            if not took(value_pattern, new_text):
+                raise ActionFailedError("값이 반영되지 않았습니다.")
             if submit:
                 send_keys(_owning_hwnd(session, node), "enter")
             return ActionResult(
@@ -328,6 +360,8 @@ def type_text(
         try:
             new_text = text if clear else (node.value or "") + text
             _call(element, lambda: legacy.SetValue(new_text))
+            if not took(legacy, new_text):
+                raise ActionFailedError("값이 반영되지 않았습니다.")
             if submit:
                 send_keys(_owning_hwnd(session, node), "enter")
             return ActionResult(

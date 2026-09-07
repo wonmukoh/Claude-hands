@@ -382,6 +382,78 @@ def test_type_with_submit_sends_enter(rec):
     assert rec.keys == [(77, "enter")]
 
 
+class SilentPattern(FakePattern):
+    """Accepts a write and keeps its old value — what a button does."""
+
+    def SetValue(self, value):
+        self.calls.append(("SetValue", value))
+
+
+def test_a_write_that_did_nothing_is_not_reported_as_done(rec):
+    """Measured: legacy.SetValue on a button answered 입력 완료 and changed nothing.
+
+    A set that returns without raising has not necessarily done anything, and
+    text is one of the few things that can be checked afterwards.
+    """
+
+    node = NodeInfo(role="button", name="대화상자 열기", rect=Rect(0, 0, 100, 20), hwnd=42)
+    legacy = SilentPattern(CurrentValue="")
+    session = make_session({"e1": (node, FakeElement(node, {"legacy": legacy}))})
+
+    result = actions.type_text(session, "e1", "시험문자열")
+
+    assert legacy.calls == [("SetValue", "시험문자열")], "시도는 했어야 합니다"
+    assert result.strategy != "uia:legacy.SetValue"
+    assert result.strategy == "message:WM_SETTEXT", "먹히는 방법으로 내려가야 합니다"
+    assert any("legacy.SetValue(실패" in a for a in result.attempts)
+
+
+def test_a_silent_value_pattern_also_falls_through(rec):
+    node = edit(hwnd=42)
+    value = SilentPattern(CurrentIsReadOnly=False, CurrentValue="")
+    session = make_session({"e1": (node, FakeElement(node, {"value": value}))})
+
+    result = actions.type_text(session, "e1", "내용")
+
+    assert result.strategy == "message:WM_SETTEXT"
+    assert rec.set_texts == [(42, "내용")]
+
+
+def test_a_control_that_reformats_what_it_was_given_still_counts(rec):
+    """A field that trims or truncates did take the write."""
+
+    class TruncatingPattern(FakePattern):
+        def SetValue(self, value):
+            self.calls.append(("SetValue", value))
+            self.CurrentValue = value[:3]
+
+    node = edit(hwnd=42)
+    value = TruncatingPattern(CurrentIsReadOnly=False, CurrentValue="")
+    session = make_session({"e1": (node, FakeElement(node, {"value": value}))})
+
+    assert actions.type_text(session, "e1", "긴 문자열").strategy == "uia:value.SetValue"
+
+
+def test_a_control_that_will_not_report_its_value_is_given_the_benefit(rec):
+    """Unverifiable is not the same as failed; refusing those breaks working calls."""
+
+    class UnreadablePattern(FakePattern):
+        def SetValue(self, value):
+            self.calls.append(("SetValue", value))
+
+        @property
+        def CurrentValue(self):
+            raise RuntimeError("이 컨트롤은 값을 알려주지 않습니다")
+
+    node = edit(hwnd=42)
+    session = make_session(
+        {"e1": (node, FakeElement(node, {"value": UnreadablePattern(CurrentIsReadOnly=False)}))}
+    )
+
+    assert actions.type_text(session, "e1", "내용").strategy == "uia:value.SetValue"
+    assert rec.set_texts == [], "먹혔다고 봤으면 WM_SETTEXT 까지 갈 이유가 없습니다"
+
+
 def test_readonly_value_pattern_falls_back_to_wm_settext(rec):
     node = edit(hwnd=42)
     value = FakePattern(CurrentIsReadOnly=True)
