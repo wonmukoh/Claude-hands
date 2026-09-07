@@ -274,14 +274,20 @@ def type_text(
     *,
     clear: bool = True,
     submit: bool = False,
-    allow_focus: bool = True,
+    allow_focus: bool = False,
 ) -> ActionResult:
     """Put text into an element.
 
     ``ValuePattern.SetValue`` is atomic and IME-safe — it hands the app the
     finished string, so Korean/Japanese input needs no composition at all, and
-    it works while the window is minimised. Character-by-character typing is a
-    fallback that does require focus.
+    it works while the window is minimised.
+
+    Typing character by character needs keyboard focus, which means taking it
+    from whatever the person is doing. That is contract 2, so it is off unless
+    the caller asks for it. It defaulted to on, and the documentation said the
+    opposite — anything without a value pattern quietly pulled its window
+    forward mid-sentence. Failing with an explanation is the better answer:
+    the caller can decide whether interrupting is worth it.
     """
 
     node, element = session.resolve(ref)
@@ -347,9 +353,11 @@ def type_text(
 
     if not allow_focus:
         raise ActionFailedError(
-            f"{label} 에 배경 상태로 입력할 방법이 없습니다 "
-            "(Value 패턴 없음). allow_focus=True 로 다시 시도하세요.\n"
-            "시도한 방법: " + " → ".join(attempts)
+            f"{label} 에 배경 상태로 입력할 방법이 없습니다 (Value 패턴 없음).\n"
+            "시도한 방법: " + " → ".join(attempts) + "\n"
+            "남은 방법은 포커스를 가져와 한 글자씩 보내는 것뿐인데, 그러면 사용자가 "
+            "하던 입력이 끊기고 이 창이 앞으로 나옵니다. 그래도 괜찮다면 "
+            "allow_focus=True 로 다시 부르세요."
         )
 
     attempts.append("focus+message:WM_CHAR")

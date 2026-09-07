@@ -375,13 +375,17 @@ async def type_text(
     clear: bool = True,
     submit: bool = False,
     hwnd: int | None = None,
+    allow_focus: bool = False,
 ) -> str:
     """입력란에 글자를 넣습니다. Office 문서라면 슬라이드·문단·셀 내용도 이걸로 바꿉니다.
 
     문자열을 통째로 전달하므로 한글 IME 조합 문제가 없고, 창이 최소화되어 있어도
-    입력됩니다. 값을 직접 설정할 수 없는 컨트롤에서만 포커스를 잡고 한 글자씩 보내는
-    방식으로 내려갑니다. 어느 방식이 쓰였는지는 결과에 항상 표시됩니다
+    입력됩니다. 어느 방식이 쓰였는지는 결과에 항상 표시됩니다
     (office:value.SetValue / uia:value.SetValue / message:WM_SETTEXT 처럼).
+
+    값을 직접 설정할 수 없는 컨트롤이면 **입력하지 않고 실패합니다.** 남은 방법이
+    포커스를 가져와 한 글자씩 보내는 것뿐이고, 그러면 사용자가 하던 입력이 끊기고
+    그 창이 앞으로 나오기 때문입니다. 그래도 해야 할 때만 allow_focus 를 켜세요.
 
     Args:
         ref: 입력란의 ref.
@@ -389,13 +393,21 @@ async def type_text(
         clear: 기존 내용을 지우고 넣을지(False 면 뒤에 이어붙임).
         submit: 입력 후 Enter 를 보낼지.
         hwnd: 대상 창.
+        allow_focus: 배경으로 넣을 방법이 없을 때 포커스를 가져와서라도 입력할지.
+            기본은 끔 — 사용자의 작업을 끊는 동작이라 부르는 쪽이 명시해야 합니다.
     """
 
     try:
         _guard_write()
         session = _session(hwnd)
         result = await _run(
-            _actions.type_text, session, ref, text, clear=clear, submit=submit
+            _actions.type_text,
+            session,
+            ref,
+            text,
+            clear=clear,
+            submit=submit,
+            allow_focus=allow_focus,
         )
     except ClaudeHandsError as exc:
         return _fail(exc)

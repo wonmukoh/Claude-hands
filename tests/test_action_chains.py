@@ -399,13 +399,34 @@ def test_last_resort_typing_focuses_then_sends_characters(rec):
     session = make_session({"e1": (node, element)})
     rec.set_text_result = False
 
-    result = actions.type_text(session, "e1", "안녕")
+    result = actions.type_text(session, "e1", "안녕", allow_focus=True)
 
     assert result.strategy == "focus+message:WM_CHAR"
     assert element.focus_calls == 1
     assert rec.chars == [(55, "안녕")]
     assert [spec for _hwnd, spec in rec.keys] == ["ctrl+a", "delete"]
     assert "포커스" in result.detail  # the caller is told focus was needed
+
+
+def test_typing_does_not_take_focus_unless_it_was_asked_to(rec):
+    """The default has to be no.
+
+    Taking focus interrupts whatever the person is typing and pulls the window
+    forward, which is contract 2. This defaulted to yes while the README said
+    "only when explicitly allowed", so any control without a value pattern
+    quietly grabbed the user's keyboard mid-sentence.
+    """
+
+    node = NodeInfo(role="edit", name="주소", rect=Rect(0, 0, 100, 20), hwnd=55)
+    element = FakeElement(node)
+    session = make_session({"e1": (node, element)})
+    rec.set_text_result = False
+
+    with pytest.raises(ActionFailedError, match="allow_focus"):
+        actions.type_text(session, "e1", "안녕")
+
+    assert element.focus_calls == 0, "거절했으면 포커스를 건드리지 않아야 합니다"
+    assert rec.chars == [], "거절했으면 한 글자도 보내지 않아야 합니다"
 
 
 def test_typing_can_refuse_to_take_focus(rec):
