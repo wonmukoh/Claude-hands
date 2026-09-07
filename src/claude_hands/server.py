@@ -12,7 +12,7 @@ import argparse
 import asyncio
 import os
 import sys
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 from . import actions as _actions
 from .api import manager, windows as _list_windows
@@ -43,6 +43,10 @@ except ImportError:  # pragma: no cover - depends on the installed SDK
 
 READ_ONLY = os.environ.get("CLAUDE_HANDS_READONLY", "").lower() in {"1", "true", "yes"}
 
+# Kept here rather than imported from the office engine so that listing a window
+# never pulls the COM stack in behind it.
+OFFICE_PROCESSES = {"powerpnt.exe", "winword.exe", "excel.exe"}
+
 mcp = _Server(
     "claude-hands",
     instructions=(
@@ -52,8 +56,18 @@ mcp = _Server(
         "계속할 수 있습니다.\n\n"
         "사용 순서: list_windows → attach_window → snapshot(ref 목록 확인) → "
         "click_element / type_text / press_keys 등으로 조작.\n"
-        "ref(e12 같은 값)는 snapshot 또는 find_elements 가 발급합니다. UI가 바뀌면 자동으로 "
-        "다시 연결하지만, 크게 달라졌다면 snapshot 을 다시 찍으세요."
+        "ref(e12 같은 값)는 snapshot 또는 find_elements 가 발급합니다. 한 번 받은 ref 는 "
+        "그 연결이 살아 있는 동안 같은 요소를 계속 가리키므로, 스냅샷을 다시 찍어도 "
+        "앞서 받은 ref 를 그대로 쓰면 됩니다.\n\n"
+        "PowerPoint · Word · Excel 은 문서 내용을 직접 다룰 수 있습니다. attach_window 가 "
+        "office 엔진을 골랐다면 트리에 슬라이드·도형·문단·셀이 나오고, type_text 로 "
+        "슬라이드 위 텍스트나 셀 값을 바로 바꿀 수 있습니다. 창이 최소화되어 있어도 "
+        "됩니다. 다만 그때는 리본·메뉴가 트리에 없으므로, 리본을 눌러야 하면 "
+        "attach_window(engine='uia') 로 다시 연결하세요.\n\n"
+        "클릭 결과는 '명령을 전달했다'는 뜻이지 '앱이 원하는 일을 했다'는 뜻이 아닙니다. "
+        "중요한 동작 뒤에는 snapshot 이나 wait_for_element 로 확인하세요. "
+        "ctrl+s 같은 단축키는 이 방식으로는 앱에 전달되지 않습니다 — 명령 실행은 "
+        "menu_select 나 버튼 클릭을 쓰세요."
     ),
 )
 
@@ -123,6 +137,7 @@ async def attach_window(
     title: str | None = None,
     process: str | None = None,
     pid: int | None = None,
+    engine: Literal["auto", "office", "uia", "win32"] = "auto",
 ) -> str:
     """조작할 창 하나에 연결합니다. 이후 모든 도구는 이 창을 대상으로 동작합니다.
 
@@ -133,20 +148,40 @@ async def attach_window(
         title: 창 제목 일부.
         process: 실행 파일 이름 일부.
         pid: 프로세스 ID.
+        engine: 보통 auto 로 두세요.
+            auto = PowerPoint·Word·Excel 이면 office, 아니면 uia, 그것도 안 되면 win32.
+            office = 열린 문서의 내용(슬라이드·문단·셀)을 직접 읽고 씁니다. 리본은 안 보입니다.
+            uia = 화면에 그려진 UI 트리. 리본·메뉴·대화상자를 다룰 때.
+            win32 = 창 메시지만 씁니다. COM 을 못 쓰는 환경용.
     """
 
     try:
         session = await _run(
-            manager().attach, hwnd=hwnd, title=title, process=process, pid=pid
+            manager().attach, hwnd=hwnd, title=title, process=process, pid=pid, engine=engine
         )
         info = await _run(session.refresh_info)
     except ClaudeHandsError as exc:
         return _fail(exc)
-    return (
-        f"연결됨: {info.describe()}\n"
-        f"창 크기 {info.rect.width}x{info.rect.height} @ {info.rect.left},{info.rect.top}\n"
-        "다음: snapshot() 으로 조작 가능한 요소와 ref 를 확인하세요."
-    )
+
+    lines = [
+        f"연결됨: {info.describe()}",
+        f"창 크기 {info.rect.width}x{info.rect.height} @ {info.rect.left},{info.rect.top}",
+    ]
+    # Which engine ends up serving this window decides what the caller can even
+    # ask for — office sees document content but no ribbon, uia the reverse —
+    # and `auto` does not settle it until the first snapshot. Say so here rather
+    # than letting the caller discover it from a tree that is missing what they
+    # were looking for.
+    if engine == "auto" and (info.process or "").lower() in OFFICE_PROCESSES:
+        lines.append(
+            "이 창은 Office 문서입니다. auto 는 office 엔진을 먼저 씁니다 — "
+            "슬라이드·문단·셀 내용을 직접 읽고 쓸 수 있고, 리본은 트리에 안 나옵니다. "
+            "리본이나 대화상자를 다루려면 engine='uia' 로 다시 연결하세요."
+        )
+    elif engine != "auto":
+        lines.append(f"엔진을 {engine} 로 고정했습니다.")
+    lines.append("다음: snapshot() 으로 조작 가능한 요소와 ref 를 확인하세요.")
+    return "\n".join(lines)
 
 
 @mcp.tool()
@@ -331,11 +366,12 @@ async def type_text(
     submit: bool = False,
     hwnd: int | None = None,
 ) -> str:
-    """입력란에 글자를 넣습니다.
+    """입력란에 글자를 넣습니다. Office 문서라면 슬라이드·문단·셀 내용도 이걸로 바꿉니다.
 
-    UI Automation 의 SetValue 로 문자열을 통째로 전달하므로 한글 IME 조합 문제가 없고,
-    창이 최소화되어 있어도 입력됩니다. SetValue 를 지원하지 않는 컨트롤에서만
-    포커스를 잡고 한 글자씩 보내는 방식으로 내려갑니다(그 경우 결과에 표시됩니다).
+    문자열을 통째로 전달하므로 한글 IME 조합 문제가 없고, 창이 최소화되어 있어도
+    입력됩니다. 값을 직접 설정할 수 없는 컨트롤에서만 포커스를 잡고 한 글자씩 보내는
+    방식으로 내려갑니다. 어느 방식이 쓰였는지는 결과에 항상 표시됩니다
+    (office:value.SetValue / uia:value.SetValue / message:WM_SETTEXT 처럼).
 
     Args:
         ref: 입력란의 ref.
@@ -420,7 +456,9 @@ async def scroll(
 @mcp.tool()
 async def set_element_state(
     ref: str,
-    action: str,
+    action: Literal[
+        "select", "toggle", "check", "uncheck", "expand", "collapse", "focus", "value"
+    ],
     value: str | None = None,
     hwnd: int | None = None,
 ) -> str:
@@ -521,8 +559,14 @@ async def wait_for_element(
 
 
 @mcp.tool()
-async def control_window(action: str, hwnd: int | None = None, x: int = 0, y: int = 0,
-                         width: int | None = None, height: int | None = None) -> str:
+async def control_window(
+    action: Literal["minimize", "restore", "maximize", "move", "close", "info"],
+    hwnd: int | None = None,
+    x: int = 0,
+    y: int = 0,
+    width: int | None = None,
+    height: int | None = None,
+) -> str:
     """창 자체를 제어합니다 (최소화/복원/최대화/이동/닫기).
 
     복원은 활성화 없이 이뤄지므로 사용자가 보던 창이 뒤로 밀리지 않습니다.
