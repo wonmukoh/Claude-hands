@@ -65,6 +65,9 @@ class WindowSession:
     taken_at: float = 0.0
     active_engine: str = ""
     engine_note: str = ""
+    # identity -> ref, kept for the life of the session so a ref issued in one
+    # snapshot still means the same element in the next one.
+    ref_identities: dict[tuple, str] = field(default_factory=dict)
     _lock: threading.RLock = field(default_factory=threading.RLock, repr=False)
 
     # -- lifecycle --------------------------------------------------------
@@ -89,7 +92,7 @@ class WindowSession:
             pruned = prune(tree, keep_offscreen=options.keep_offscreen) or tree
             pruned = collapse_chains(pruned)
             self.tree = pruned
-            self.refs = assign_refs(pruned)
+            self.refs = assign_refs(pruned, known=self.ref_identities)
             self.elements = index
             self.taken_at = time.time()
             return pruned

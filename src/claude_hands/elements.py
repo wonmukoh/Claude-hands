@@ -248,15 +248,83 @@ def render_tree(
     return "\n".join(lines)
 
 
-def assign_refs(root: NodeInfo, *, prefix: str = "e", start: int = 1) -> dict[str, NodeInfo]:
-    """Give every node a short, stable-within-snapshot handle like ``e12``."""
+def node_identity(node: NodeInfo, parent: tuple, twin_index: int) -> tuple:
+    """What makes a node across two snapshots the same element.
 
+    The runtime id is authoritative wherever the backend has one — UI
+    Automation issues them, and the win32 engine uses the control's HWND. The
+    Office engine has none, so identity falls back to where the thing sits and
+    what it is called: the parent's identity, the role, the name, the
+    automation id. `twin_index` separates genuine duplicates only — PowerPoint
+    really does put a shape called "Rectangle 2" on many slides — so a node
+    with a name unique among its siblings keeps its identity even when the
+    siblings around it come and go.
+    """
+
+    if node.runtime_id:
+        return ("rid",) + tuple(node.runtime_id)
+    return parent + ((node.role, node.name, node.automation_id, twin_index),)
+
+
+def assign_refs(
+    root: NodeInfo,
+    *,
+    prefix: str = "e",
+    start: int = 1,
+    known: dict[tuple, str] | None = None,
+) -> dict[str, NodeInfo]:
+    """Give every node a handle like ``e12``, stable for as long as ``known`` lives.
+
+    Numbering each snapshot from 1 is what a single snapshot wants and what a
+    conversation cannot survive. Measured against the sample app: `e3` was the
+    text box, a dialog opened, the next snapshot gave `e3` to that dialog's OK
+    button — and a caller still holding `e3` pressed OK believing it was typing.
+    The session's re-identification does not catch this, because the ref is not
+    stale; it now names something else entirely.
+
+    So pass the session's `known` map (identity -> ref) and an element keeps the
+    ref it was first issued. Refs stop being contiguous as a UI churns, which is
+    the honest trade: a gap in the numbering costs a reader nothing, a silently
+    recycled ref costs the caller a wrong click.
+    """
+
+    known = {} if known is None else known
     registry: dict[str, NodeInfo] = {}
+    used = set(known.values())
     counter = start
-    for node in root.walk():
-        node.ref = f"{prefix}{counter}"
-        registry[node.ref] = node
+
+    def next_ref() -> str:
+        nonlocal counter
+        while f"{prefix}{counter}" in used:
+            counter += 1
+        ref = f"{prefix}{counter}"
+        used.add(ref)
         counter += 1
+        return ref
+
+    def descend(node: NodeInfo, parent: tuple) -> None:
+        seen: dict[tuple, int] = {}
+        for child in node.children:
+            key = (child.role, child.name, child.automation_id)
+            twin = seen.get(key, 0)
+            seen[key] = twin + 1
+            identity = node_identity(child, parent, twin)
+            ref = known.get(identity)
+            if ref is None:
+                ref = next_ref()
+                known[identity] = ref
+            child.ref = ref
+            registry[ref] = child
+            descend(child, identity)
+
+    root_identity = node_identity(root, (), 0)
+    root_ref = known.get(root_identity)
+    if root_ref is None:
+        root_ref = next_ref()
+        known[root_identity] = root_ref
+    root.ref = root_ref
+    registry[root_ref] = root
+    descend(root, root_identity)
     return registry
 
 
