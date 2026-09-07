@@ -644,16 +644,43 @@ def get_text(session: WindowSession, ref: str | None = None, *, max_chars: int =
     value = element.value()
     if value:
         return value
-    if node.name:
-        return node.name
 
-    # Nothing directly readable: stitch descendant text together.
-    pieces = [
-        child.name
-        for child in node.walk()
-        if child.role in {"text", "edit", "document", "listitem", "treeitem", "dataitem"}
-        and child.name
-    ]
+    # A container's own name is its title, not its contents, and the title is
+    # almost never what someone reading a window wanted: an Office document
+    # root answers with its filename, so `read_text()` on a whole presentation
+    # used to return "발표.pptx" and stop. Gather what is inside first and keep
+    # the title as the last resort.
+    stitched = _stitch_text(node, max_chars)
+    if stitched:
+        return stitched
+    return node.name
+
+
+TEXT_BEARING_ROLES = {"text", "edit", "document", "listitem", "treeitem", "dataitem"}
+
+
+def _stitch_text(node: NodeInfo, max_chars: int) -> str:
+    """Join the text held below a container, in the order it is laid out.
+
+    A node's value is its content where the backend supplies one — a slide
+    shape's text, an edit box's contents. Names only stand in for it on the
+    roles that are text in the first place, because elsewhere the name is a
+    label ("TextBox 4") rather than anything a reader wants.
+    """
+
+    pieces = []
+    for child in node.walk():
+        if child is node:
+            continue
+        text = (child.value or "").strip()
+        if not text and "value" not in child.patterns and child.role in TEXT_BEARING_ROLES:
+            # An element that can hold a value and holds none is empty, not
+            # unnamed — reporting its label instead put "Rectangle 2" in the
+            # middle of a slide's text. Names only stand in where the backend
+            # has no value to give at all, as with static labels.
+            text = (child.name or "").strip()
+        if text:
+            pieces.append(text)
     return "\n".join(dict.fromkeys(pieces))[:max_chars]
 
 
