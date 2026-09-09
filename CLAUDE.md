@@ -133,6 +133,15 @@ COM 아파트먼트 안에서 `SendMessage` 하면 `RPC_E_CANTCALLOUT_ININPUTSYN
 처리하는 키만 동작합니다. 명령 실행은 `menu_select`(실제 HMENU → `WM_COMMAND`)나
 버튼 클릭을 쓰세요.
 
+**`alt` 는 예외입니다.** `send_key` 가 `WM_SYSKEYDOWN` 으로 보내고, 고전 메뉴는
+그걸 직접 처리하므로 `alt+f` 로 파일 메뉴가 실제로 열립니다. 안 되는 것은
+`ctrl`·`shift`·`win` 입니다.
+
+이걸 알면서도 `press_keys` 는 셋 다 똑같이 "완료" 라고 답하고 있었습니다. 지금은
+`ActionResult.warning` 에 **어느 수식키가 무시되는지**와 대안을 적어 돌려줍니다.
+확인할 수 없는 일은 확인할 수 없다고 말해야 하고, 미리 아는 한계는 미리 말해야
+합니다.
+
 ### 6. 컨트롤 이름의 `&` 는 제거해야 합니다
 
 Windows 는 `Add appli&cation...` 을 `Add application...` 으로 그립니다. 안 벗기면

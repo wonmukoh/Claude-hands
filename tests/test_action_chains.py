@@ -723,6 +723,42 @@ def test_keys_repeat(rec):
     assert len(rec.keys) == 3
 
 
+def test_a_shortcut_says_its_modifier_will_not_reach_the_app(rec):
+    """An accelerator table reads the physical keyboard; posting never touches it.
+
+    The keys are still sent — some windows handle WM_KEYDOWN themselves — but
+    "완료" on its own would read as "the file was saved".
+    """
+
+    session = make_session({})
+    result = actions.press_keys(session, "ctrl+s")
+
+    assert result.ok, "보내기는 보냅니다"
+    assert "ctrl" in result.warning
+    assert "menu_select" in result.warning
+    assert "주의" in result.describe()
+
+
+def test_the_warning_names_every_modifier_that_will_be_ignored(rec):
+    result = actions.press_keys(make_session({}), "ctrl+shift+n")
+    assert "ctrl" in result.warning and "shift" in result.warning
+
+
+def test_alt_is_not_warned_about_because_it_works(rec):
+    """Alt goes as WM_SYSKEYDOWN, which menus act on."""
+
+    assert actions.press_keys(make_session({}), "alt+f").warning == ""
+
+
+def test_a_plain_key_is_not_warned_about(rec):
+    for spec in ("enter", "f5", "down", "tab"):
+        assert actions.press_keys(make_session({}), spec).warning == "", spec
+
+
+def test_the_warning_survives_into_the_dictionary_form(rec):
+    assert "ctrl" in actions.press_keys(make_session({}), "ctrl+p").as_dict()["warning"]
+
+
 # --------------------------------------------------------------------------
 # menu_select
 # --------------------------------------------------------------------------

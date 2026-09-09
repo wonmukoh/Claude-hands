@@ -448,9 +448,17 @@ async def press_keys(
     repeat: int = 1,
     hwnd: int | None = None,
 ) -> str:
-    """단축키를 창에 보냅니다 (예: "ctrl+s", "alt+f4", "ctrl+shift+n enter").
+    """키를 창에 보냅니다 (예: "enter", "alt+f", "down down enter").
 
     창 메시지로 보내므로 사용자의 실제 키보드를 가로채지 않습니다.
+
+    **ctrl·shift·win 조합은 앱에 전달되지 않습니다.** 단축키 표는 물리 키보드
+    상태를 확인하는데 메시지 전송은 그것을 바꾸지 않습니다. 보내지기는 하지만
+    수식키가 무시되므로, 그런 조합을 쓰면 결과에 경고가 붙습니다. 명령을 실행하려면
+    menu_select 나 버튼 클릭을 쓰세요.
+
+    동작하는 것: 단독 키(enter·tab·방향키·F1~F12·문자)와 **alt 조합** — alt 는
+    WM_SYSKEYDOWN 으로 가서 고전 메뉴가 직접 처리합니다.
 
     Args:
         keys: 키 조합. 공백/쉼표로 여러 조합을 순서대로 보낼 수 있습니다.

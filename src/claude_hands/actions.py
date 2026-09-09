@@ -24,6 +24,7 @@ from .session import WindowSession
 from .win32.defs import ClaudeHandsError
 from .win32.input import (
     click_at_screen_point,
+    parse_keys,
     scroll_at_screen_point,
     screen_point_in_element,
     send_keys,
@@ -45,6 +46,9 @@ class ActionResult:
     target: str = ""
     detail: str = ""
     attempts: list[str] = field(default_factory=list)
+    warning: str = ""
+    """Said the action went through, but not that it will have the effect asked
+    for. Used where the limit is known in advance and cannot be checked after."""
 
     def describe(self) -> str:
         status = "완료" if self.ok else "실패"
@@ -52,6 +56,8 @@ class ActionResult:
         line += f" (방식: {self.strategy})"
         if self.detail:
             line += f"\n{self.detail}"
+        if self.warning:
+            line += f"\n주의: {self.warning}"
         if not self.ok and self.attempts:
             line += "\n시도한 방법: " + " → ".join(self.attempts)
         return line
@@ -64,6 +70,7 @@ class ActionResult:
             "target": self.target,
             "detail": self.detail,
             "attempts": self.attempts,
+            "warning": self.warning,
         }
 
 
@@ -279,6 +286,14 @@ def _short(exc: BaseException, limit: int = 80) -> str:
 # --------------------------------------------------------------------------
 
 
+UNPOSTABLE_MODIFIERS = {"ctrl", "shift", "win"}
+"""Modifiers a posted message cannot make an application believe in.
+
+An accelerator table asks ``GetKeyState`` what is physically held down, and
+posting WM_KEYDOWN for Ctrl does not change that. Alt is the exception: it goes
+as WM_SYSKEYDOWN, which menus handle directly.
+"""
+
 TEXT_ENTRY_ROLES = {"edit", "combobox", "document", "spinner", "searchbox"}
 """Roles where a window's text is its contents rather than its label.
 
@@ -482,7 +497,14 @@ def press_keys(
     ref: str | None = None,
     repeat: int = 1,
 ) -> ActionResult:
-    """Post a key chord to the window (or to one element's HWND)."""
+    """Post a key chord to the window (or to one element's HWND).
+
+    Alt is delivered as ``WM_SYSKEYDOWN``, which classic menus act on, so
+    ``alt+f`` genuinely opens a File menu. Ctrl, Shift and Win are posted as
+    ordinary key messages, and an accelerator table decides what a shortcut
+    means by reading the *physical* keyboard with ``GetKeyState`` — which
+    posting never touches. Those chords arrive with the modifier ignored.
+    """
 
     target_hwnd = session.hwnd
     label = "창"
@@ -491,15 +513,31 @@ def press_keys(
         target_hwnd = _owning_hwnd(session, node)
         label = _target_label(node)
 
+    ineffective = sorted(
+        {m for stroke in parse_keys(keys) for m in stroke.modifiers if m in UNPOSTABLE_MODIFIERS}
+    )
+
     sent: list[str] = []
     for _ in range(max(1, repeat)):
         sent = send_keys(target_hwnd, keys)
+
+    warning = ""
+    if ineffective:
+        # Nothing here can be checked afterwards, and the limit is known in
+        # advance, so say it rather than let the caller read "완료" and assume.
+        warning = (
+            f"{'/'.join(ineffective)} 는 이 방식으로 앱에 전달되지 않습니다. "
+            "단축키 표는 물리 키보드 상태를 보는데 메시지 전송은 그것을 바꾸지 않습니다. "
+            "명령을 실행하려면 menu_select 나 버튼 클릭을 쓰세요. "
+            "alt 조합과 단독 키(enter·tab·방향키·F1~F12·문자)는 그대로 동작합니다."
+        )
     return ActionResult(
         True,
         "keys",
         "message:WM_KEYDOWN",
         label,
         detail=f"{' '.join(sent)} × {max(1, repeat)} → hwnd={target_hwnd}",
+        warning=warning,
     )
 
 
