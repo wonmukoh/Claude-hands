@@ -124,8 +124,31 @@ claude mcp add claude-hands -- claude-hands-mcp
 }
 ```
 
-읽기만 허용하려면 `--read-only` 를 붙이거나 `CLAUDE_HANDS_READONLY=1` 을 설정하세요.
-조작 도구는 막히고 창 목록·스냅샷·캡처만 남습니다.
+### 읽기 전용으로 붙이기
+
+조작은 시키지 않고 화면만 읽게 하려면 읽기 전용으로 등록하세요. 클릭·입력·창
+제어가 **서버 쪽에서** 막히므로, 무엇을 부르든 사용자의 창은 바뀌지 않습니다.
+
+```bash
+claude mcp add claude-hands --env CLAUDE_HANDS_READONLY=1 -- claude-hands-mcp
+```
+
+```json
+{
+  "mcpServers": {
+    "claude-hands": {
+      "command": "claude-hands-mcp",
+      "env": { "CLAUDE_HANDS_READONLY": "1" }
+    }
+  }
+}
+```
+
+`claude-hands-mcp --read-only` 도 같습니다. 켜져 있으면 서버가 접속할 때 그
+사실을 알리므로, 모델이 조작을 시도했다가 실패하는 대신 처음부터 압니다.
+
+남는 것: `list_windows` · `attach_window` · `snapshot` · `find_elements` ·
+`read_text` · `screenshot_window` · `wait_for_element`.
 
 ### 도구 목록
 

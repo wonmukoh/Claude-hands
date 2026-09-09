@@ -399,6 +399,19 @@ ROT 접근은 pywin32 로 합니다(`pythoncom.GetRunningObjectTable`). comtypes
 입니다. 처음에 포함 검사만 했더니 `"" in "시험문자열"` 이 참이라 버튼이 그대로
 통과했습니다.
 
+### 25. MCP 안내문은 서버를 만들 때 굳습니다
+
+`MCPServer(instructions=...)` 는 생성 시점에 고정되고 나중에 못 바꿉니다
+(`instructions` 속성이 읽기 전용). 그런데 `--read-only` 플래그는 `main()` 에서,
+즉 서버가 이미 만들어진 뒤에 `READ_ONLY` 를 켜고 있었습니다.
+
+결과: 플래그로 켜면 **조작은 전부 거절하면서 안내문은 "조작할 수 있다" 고
+말했습니다.** 환경 변수로 켤 때만 안내가 맞았습니다.
+
+그래서 읽기 전용 여부는 `_read_only_requested()` 가 **임포트 시점에** 환경 변수와
+`sys.argv` 양쪽을 보고 정합니다. 접속 시점에 알려 주는 값과 실제로 강제되는 값이
+같아야 합니다.
+
 ## 지금까지 검증된 것
 
 Wine 위 Windows CPython 으로 실행 중인 Win32 프로그램(메모장·winecfg) 상대,

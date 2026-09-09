@@ -63,3 +63,30 @@ def test_read_only_mode_blocks_writes_but_not_reads(monkeypatch):
 def test_main_exposes_the_read_only_flag():
     with pytest.raises(SystemExit):
         server.main(["--help"])
+
+
+def test_read_only_is_decided_from_both_the_flag_and_the_variable(monkeypatch):
+    """It has to be settled before the server is built.
+
+    The server's instructions are fixed at construction, and construction
+    happens at import. Deciding this later left `--read-only` refusing every
+    write while still telling the caller it could click.
+    """
+
+    monkeypatch.delenv("CLAUDE_HANDS_READONLY", raising=False)
+    assert server._read_only_requested([]) is False
+    assert server._read_only_requested(["--read-only"]) is True
+
+    for value in ("1", "true", "YES"):
+        monkeypatch.setenv("CLAUDE_HANDS_READONLY", value)
+        assert server._read_only_requested([]) is True
+
+    monkeypatch.setenv("CLAUDE_HANDS_READONLY", "0")
+    assert server._read_only_requested([]) is False
+
+
+def test_the_instructions_say_so_while_read_only(monkeypatch):
+    assert "읽기 전용" in server.READ_ONLY_NOTICE
+    assert "CLAUDE_HANDS_READONLY" in server.READ_ONLY_NOTICE
+    # The caller cannot lift it from here, and the notice has to say that.
+    assert "사용자에게" in server.READ_ONLY_NOTICE

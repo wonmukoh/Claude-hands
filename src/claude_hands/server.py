@@ -41,11 +41,31 @@ except ImportError:  # pragma: no cover - depends on the installed SDK
         ) from exc
 
 
-READ_ONLY = os.environ.get("CLAUDE_HANDS_READONLY", "").lower() in {"1", "true", "yes"}
+def _read_only_requested(argv: list[str] | None = None) -> bool:
+    """Whether this server should refuse to change anything.
+
+    The command-line flag has to be read here rather than in ``main``, because
+    the server's instructions are fixed when it is constructed and that happens
+    at import. Setting it later left ``--read-only`` running read-only while
+    telling the caller it could click.
+    """
+
+    if os.environ.get("CLAUDE_HANDS_READONLY", "").lower() in {"1", "true", "yes"}:
+        return True
+    return "--read-only" in (sys.argv[1:] if argv is None else argv)
+
+
+READ_ONLY = _read_only_requested()
 
 # Kept here rather than imported from the office engine so that listing a window
 # never pulls the COM stack in behind it.
 OFFICE_PROCESSES = {"powerpnt.exe", "winword.exe", "excel.exe", "hwp.exe"}
+
+READ_ONLY_NOTICE = (
+    "\n\n**지금은 읽기 전용 모드입니다** (CLAUDE_HANDS_READONLY). 읽기·검색·캡처는 "
+    "되지만 클릭·입력·창 제어는 전부 거절됩니다. 조작이 필요하면 사용자에게 이 "
+    "환경 변수를 꺼 달라고 하세요 — 도구 쪽에서는 풀 수 없습니다."
+)
 
 mcp = _Server(
     "claude-hands",
@@ -67,7 +87,11 @@ mcp = _Server(
         "클릭 결과는 '명령을 전달했다'는 뜻이지 '앱이 원하는 일을 했다'는 뜻이 아닙니다. "
         "중요한 동작 뒤에는 snapshot 이나 wait_for_element 로 확인하세요. "
         "ctrl+s 같은 단축키는 이 방식으로는 앱에 전달되지 않습니다 — 명령 실행은 "
-        "menu_select 나 버튼 클릭을 쓰세요."
+        "menu_select 나 버튼 클릭을 쓰세요.\n\n"
+        "type_text 는 입력란에만 씁니다. 버튼이나 체크박스에 부르면 거절합니다 — "
+        "그 경로는 컨트롤의 이름을 바꿔 버리기 때문입니다. 버튼은 click_element, "
+        "체크박스·목록은 set_element_state 입니다."
+        + (READ_ONLY_NOTICE if READ_ONLY else "")
     ),
 )
 
