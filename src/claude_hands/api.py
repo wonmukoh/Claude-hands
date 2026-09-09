@@ -110,7 +110,9 @@ class Window:
         capture = capture_window(self.hwnd, restore_if_minimized=restore_if_minimized)
         if ref:
             node, _element = self._session.resolve(ref)
-            if node.rect:
+            # Cropping needs screen pixels. A document rectangle would cut some
+            # unrelated corner of the window and look like a real answer.
+            if node.rect and node.rect_space == "screen":
                 return capture.crop(node.rect)
         return capture
 

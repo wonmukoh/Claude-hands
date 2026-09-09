@@ -47,6 +47,15 @@ class NodeInfo:
     automation_id: str = ""
     class_name: str = ""
     rect: Optional[Rect] = None
+    rect_space: str = "screen"
+    """Which coordinate system ``rect`` is in.
+
+    ``screen`` is desktop pixels, which is what clicking and cropping need.
+    The Office engine reports a shape's place on the slide or page in points
+    instead, and it is marked ``document`` so nothing treats it as a screen
+    position — a slide rectangle handed to a click lands somewhere arbitrary on
+    the desktop, quite possibly in another program.
+    """
     enabled: bool = True
     offscreen: bool = False
     focusable: bool = False

@@ -171,6 +171,18 @@ def click(
         except Exception as exc:  # noqa: BLE001
             attempts[-1] = f"{context_label}(실패: {_short(exc)})"
 
+    if node.rect_space != "screen":
+        # The only route left aims at a screen coordinate, and this element's
+        # rectangle is not one. Clicking it would press whatever happens to sit
+        # at that spot on the desktop, which could be another program entirely.
+        raise ActionFailedError(
+            f"{label} 은(는) 화면 좌표가 없어 좌표 클릭으로 누를 수 없습니다 "
+            f"(좌표계={node.rect_space}).\n"
+            "시도한 방법: " + (" → ".join(attempts) if attempts else "없음") + "\n"
+            "문서 안의 요소라면 값을 바꾸는 type_text 를 쓰거나, 리본·메뉴를 눌러야 하면 "
+            "attach_window(engine='uia') 로 다시 연결하세요."
+        )
+
     # Message-based click at the element's centre.
     attempts.append("message:click")
     scroll_into_view(session, ref, quiet=True)

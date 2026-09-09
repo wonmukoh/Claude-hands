@@ -346,7 +346,10 @@ async def screenshot_window(
         )
         if ref:
             node, _element = await _run(session.resolve, ref)
-            if node.rect:
+            # Cropping needs screen pixels. A document rectangle would cut some
+            # unrelated corner of the window and look like a real answer, so
+            # the whole window comes back instead.
+            if node.rect and node.rect_space == "screen":
                 capture = capture.crop(node.rect)
         png = await _run(capture.to_png, max_side=max_side)
     except ClaudeHandsError as exc:

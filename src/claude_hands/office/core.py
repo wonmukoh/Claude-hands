@@ -239,6 +239,7 @@ class OfficeElement:
             value=self.value() if patterns else "",
             class_name="office",
             rect=self.rect,
+            rect_space="document",
             enabled=self.enabled,
             offscreen=False,
             focusable=False,

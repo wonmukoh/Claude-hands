@@ -257,6 +257,20 @@ def test_the_node_budget_is_respected_and_marked(office):
     assert root.truncated_children == 1, "잘렸으면 잘렸다고 말해야 합니다"
 
 
+def test_shape_rectangles_are_marked_as_document_coordinates(office):
+    """They are points on the slide, not pixels on the desktop.
+
+    Unmarked, a click aims at those numbers as a screen position and a
+    screenshot crops the window at them — both silently wrong.
+    """
+
+    install(office, [(901, MINE)])
+    root, _ = core.build_office_tree(900, "fake.exe")
+
+    assert root.rect_space == "document"
+    assert all(n.rect_space == "document" for n in root.walk())
+
+
 def test_text_shapes_carry_the_value_pattern_so_actions_can_type(office):
     install(office, [(901, MINE)])
     root, _ = core.build_office_tree(900, "fake.exe")

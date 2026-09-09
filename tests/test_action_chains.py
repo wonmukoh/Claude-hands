@@ -266,6 +266,45 @@ def test_click_with_no_patterns_goes_straight_to_messages(rec):
     assert rec.clicks[0]["target"] == 1001  # deepest child under the point
 
 
+def test_a_document_rectangle_is_never_clicked_as_a_screen_position(rec):
+    """The Office engine reports where a shape sits on the slide, in points.
+
+    Handing that to the coordinate fallback presses whatever occupies those
+    desktop pixels — quite possibly a different program. Refusing is the only
+    safe answer, since there is nothing to convert it with.
+    """
+
+    node = NodeInfo(
+        role="edit",
+        name="TextBox 4",
+        rect=Rect(36, 212, 684, 266),
+        rect_space="document",
+    )
+    session = make_session({"e1": (node, FakeElement(node))})
+
+    with pytest.raises(ActionFailedError, match="화면 좌표가 없어"):
+        actions.click(session, "e1")
+
+    assert rec.clicks == [], "한 번도 누르지 않아야 합니다"
+
+
+def test_a_document_element_with_a_working_pattern_still_clicks(rec):
+    """The guard is on the coordinate fallback, not on the element."""
+
+    node = NodeInfo(
+        role="button", name="확인", rect=Rect(0, 0, 50, 20), rect_space="document"
+    )
+    invoke = FakePattern()
+    session = make_session({"e1": (node, FakeElement(node, {"invoke": invoke}))})
+
+    assert actions.click(session, "e1").strategy == "uia:invoke"
+    assert invoke.calls == [("Invoke",)]
+
+
+def test_screen_is_the_default_so_ordinary_elements_are_unaffected():
+    assert NodeInfo(role="button", name="확인").rect_space == "screen"
+
+
 def test_click_uses_the_live_rect_not_the_snapshot_rect(rec):
     """A slide that scrolled since the snapshot must not be clicked at stale coords."""
 
