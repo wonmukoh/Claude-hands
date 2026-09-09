@@ -267,6 +267,14 @@ def _short(exc: BaseException, limit: int = 80) -> str:
 # --------------------------------------------------------------------------
 
 
+TEXT_ENTRY_ROLES = {"edit", "combobox", "document", "spinner", "searchbox"}
+"""Roles where a window's text is its contents rather than its label.
+
+Anywhere else, setting the window text renames the control instead of filling
+it in, so the fallbacks that work that way are not offered.
+"""
+
+
 def type_text(
     session: WindowSession,
     ref: str,
@@ -372,7 +380,12 @@ def type_text(
             attempts[-1] = f"{legacy_label}(실패: {_short(exc)})"
 
     hwnd = node.hwnd
-    if hwnd and clear:
+    # WM_SETTEXT sets a window's caption, and on a control that is not a text
+    # box that is its label rather than its contents — sending it to a button
+    # renames the button. That is a visible change to the person's program
+    # that nobody asked for, so it is only offered where "the window's text"
+    # and "what the user typed" are the same thing.
+    if hwnd and clear and node.role in TEXT_ENTRY_ROLES:
         attempts.append("message:WM_SETTEXT")
         try:
             if set_window_text(hwnd, text):
@@ -385,10 +398,22 @@ def type_text(
         except Exception as exc:  # noqa: BLE001
             attempts[-1] = f"message:WM_SETTEXT(실패: {_short(exc)})"
 
+    tried = " → ".join(attempts) if attempts else "없음"
+    if node.role not in TEXT_ENTRY_ROLES:
+        # Nothing here can put text into, say, a button. The remaining routes
+        # would rename it or send keystrokes it ignores, so the honest answer
+        # is that this element is the wrong target.
+        raise ActionFailedError(
+            f"{label} 은(는) 글자를 담는 요소가 아닙니다 (역할={node.role}).\n"
+            f"시도한 방법: {tried}\n"
+            "버튼이라면 click_element 를, 목록이나 체크박스라면 set_element_state 를 "
+            "쓰세요. 입력란을 찾으려면 find_elements(role='edit') 로 확인하세요."
+        )
+
     if not allow_focus:
         raise ActionFailedError(
             f"{label} 에 배경 상태로 입력할 방법이 없습니다 (Value 패턴 없음).\n"
-            "시도한 방법: " + " → ".join(attempts) + "\n"
+            f"시도한 방법: {tried}\n"
             "남은 방법은 포커스를 가져와 한 글자씩 보내는 것뿐인데, 그러면 사용자가 "
             "하던 입력이 끊기고 이 창이 앞으로 나옵니다. 그래도 괜찮다면 "
             "allow_focus=True 로 다시 부르세요."

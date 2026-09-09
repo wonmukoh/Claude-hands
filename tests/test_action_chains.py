@@ -390,13 +390,13 @@ class SilentPattern(FakePattern):
 
 
 def test_a_write_that_did_nothing_is_not_reported_as_done(rec):
-    """Measured: legacy.SetValue on a button answered 입력 완료 and changed nothing.
+    """Measured: legacy.SetValue answered 입력 완료 and changed nothing.
 
     A set that returns without raising has not necessarily done anything, and
     text is one of the few things that can be checked afterwards.
     """
 
-    node = NodeInfo(role="button", name="대화상자 열기", rect=Rect(0, 0, 100, 20), hwnd=42)
+    node = edit(hwnd=42)
     legacy = SilentPattern(CurrentValue="")
     session = make_session({"e1": (node, FakeElement(node, {"legacy": legacy}))})
 
@@ -406,6 +406,34 @@ def test_a_write_that_did_nothing_is_not_reported_as_done(rec):
     assert result.strategy != "uia:legacy.SetValue"
     assert result.strategy == "message:WM_SETTEXT", "먹히는 방법으로 내려가야 합니다"
     assert any("legacy.SetValue(실패" in a for a in result.attempts)
+
+
+def test_typing_into_something_that_is_not_a_text_box_is_refused(rec):
+    """WM_SETTEXT on a button renames it — a visible change nobody asked for.
+
+    Measured on a real window: typing into a button quietly relabelled it and
+    reported success. Every remaining route either does that or sends keys the
+    control ignores, so the element is simply the wrong target.
+    """
+
+    node = NodeInfo(role="button", name="대화상자 열기", rect=Rect(0, 0, 100, 20), hwnd=42)
+    legacy = SilentPattern(CurrentValue="")
+    session = make_session({"e1": (node, FakeElement(node, {"legacy": legacy}))})
+
+    with pytest.raises(ActionFailedError, match="글자를 담는 요소가 아닙니다"):
+        actions.type_text(session, "e1", "시험문자열")
+
+    assert rec.set_texts == [], "이름을 바꿔 놓고 오면 안 됩니다"
+    assert rec.chars == []
+
+
+def test_the_refusal_names_the_tool_that_would_have_worked(rec):
+    node = NodeInfo(role="checkbox", name="알림 받기", rect=Rect(0, 0, 100, 20), hwnd=9)
+    session = make_session({"e1": (node, FakeElement(node))})
+
+    with pytest.raises(ActionFailedError) as caught:
+        actions.type_text(session, "e1", "켜기")
+    assert "set_element_state" in str(caught.value)
 
 
 def test_a_silent_value_pattern_also_falls_through(rec):
