@@ -24,6 +24,31 @@ Windows 프로그램을 **창 하나 단위로** 조작하는 도구. 데스크�
 `examples/verify_live.py` 는 매 동작 **직전에** 커서와 전경 창을 다시 읽어서, 그
 동작 중에 바뀌었으면 실패로 기록합니다. 이 검사를 약화시키지 마세요.
 
+## 이 저장소를 받아 가는 곳 — 푸시가 곧 배포다
+
+MAGISTER(`projects\MAGISTER`) 의 '윈도우 창 제어' 모듈이 선생님들 PC 에 이 도구를
+설치합니다 (`MagisterOfficiorum.ps1`, 2026-09-23 확인).
+
+```
+pip install --upgrade "git+https://github.com/wonmukoh/Claude-hands"
+→ claude-hands-mcp.exe 를 site 경로에서 찾아 mcpServers 에 'claude-hands' 로 등록
+→ claude-hands.exe doctor 로 자체 진단
+```
+
+브랜치를 지정하지 않으므로 **기본 브랜치에 푸시한 것이 다음 설치부터 선생님들에게
+갑니다.** 그리고 아래 셋 중 하나가 바뀌면 이 PC 에서는 멀쩡하고 선생님들 PC 에서만
+조용히 깨집니다 — 이 PC 에는 이미 깔려 있어서 티가 안 납니다.
+
+| 무엇 | 지금 | 바뀌면 |
+|---|---|---|
+| 저장소 공개 여부 | 공개 (익명 HTTP 200) | 비공개면 pip 가 실패 |
+| 기본 브랜치 | `claude/windows-program-click-tool-ja9jsw` | 다른 내용의 브랜치로 기본을 바꾸면 그게 설치됨 |
+| 콘솔 스크립트 | `claude-hands-mcp`, `claude-hands` | exe 를 못 찾아 등록 실패 |
+
+이 셋을 바꿔야 하면 **먼저 MAGISTER 세션에 알리세요.** 그쪽이 모듈을 맞추고 새
+배포본을 올립니다. `doctor` 출력 형식이나 종료 코드를 바꿀 때도 마찬가지입니다 —
+MAGISTER 는 비정상 종료를 경고로 기록합니다.
+
 ## 구조
 
 ```
