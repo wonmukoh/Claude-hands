@@ -240,6 +240,9 @@ USER_ONLY_LABELS = {
     # button by those names: 문서처리 opens the approval dialog, and when the
     # approval line has changed it submits after a single confirm.
     "결재", "결재하기", "승인", "전결", "대결", "연속결재", "일괄결재", "일괄과제결재", "문서처리",
+    # Acting on it outward from the 결재 window: asking the drafter to redo
+    # the approval line, and posting it to the 공문 board.
+    "재지정요청", "공문게시지정",
 }
 """Buttons that commit the user to a document, said by their whole label.
 
@@ -254,9 +257,9 @@ CHOOSING_ROLES = {"listitem", "radiobutton", "checkbox", "combobox", "edit", "ta
 """Roles that only choose, never commit. The approver dialog's 결재유형 list
 offers 결재·전결·대결 as options, and picking one is part of drafting."""
 
-USER_ONLY_IDS = {"sanctn", "processdoc"}
-"""The same buttons by DOM id: K-에듀파인's 결재올림 (기안 window) and 문서처리
-(결재 window, ``fncProcessDoc``)."""
+USER_ONLY_IDS = {"sanctn", "processdoc", "requestmodifyline", "ofldcntt", "ofldcnttspan"}
+"""The same buttons by DOM id, lower-cased: K-에듀파인's 결재올림 (기안 window),
+and 문서처리, 재지정요청 and 공문게시지정 with its caption span (결재 window)."""
 
 ALLOW_SEND_ENV = "CLAUDE_HANDS_ALLOW_SEND"
 

@@ -985,11 +985,15 @@ def test_approving_someone_elses_document_is_left_to_the_user(rec, name, monkeyp
     assert pattern.calls == []
 
 
-def test_the_approval_windows_way_in_is_refused_by_its_id_too(rec, monkeypatch):
+@pytest.mark.parametrize("name, dom_id", [("", "processdoc"), ("", "requestModifyLine"),
+                                          ("", "ofldcNtt"), ("", "ofldcNttspan"),
+                                          ("재지정요청", ""), ("공문게시지정", "")])
+def test_the_approval_windows_outward_links_are_refused_by_name_or_id(rec, name, dom_id, monkeypatch):
     # K-에듀파인's 결재 window has no button called 결재: 문서처리 (processdoc)
-    # opens the approval dialog, and can submit after a single confirm.
+    # opens the approval dialog, and can submit after a single confirm. The
+    # user kept 재지정요청 and 공문게시지정 as well.
     monkeypatch.delenv(actions.ALLOW_SEND_ENV, raising=False)
-    node = link("", "processdoc")
+    node = link(name, dom_id)
     pattern = FakePattern()
     session = make_session({"e1": (node, FakeElement(node, {"invoke": pattern}))})
 
@@ -999,7 +1003,8 @@ def test_the_approval_windows_way_in_is_refused_by_its_id_too(rec, monkeypatch):
 
 
 @pytest.mark.parametrize("name, dom_id", [("의견조회", "retrieveopinion"), ("이력보기", "histex"),
-                                          ("본문복사", "copyBody"), ("요약", "sumry")])
+                                          ("본문복사", "copyBody"), ("요약", "sumry"),
+                                          ("개인정보필터", "privFilter")])
 def test_the_approval_windows_reading_links_stay_pressable(rec, name, dom_id, monkeypatch):
     monkeypatch.delenv(actions.ALLOW_SEND_ENV, raising=False)
     node = link(name, dom_id)
