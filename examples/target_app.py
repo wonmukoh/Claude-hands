@@ -40,7 +40,7 @@ WS_TABSTOP = 0x00010000
 ES_AUTOHSCROLL = 0x0080
 BS_AUTOCHECKBOX = 0x0003
 BS_PUSHBUTTON = 0x0000
-SW_SHOWNORMAL = 1
+SW_SHOWNOACTIVATE = 4  # launching it must not take the keyboard from anyone
 WM_DESTROY = 0x0002
 WM_COMMAND = 0x0111
 MB_OK = 0x0000
@@ -190,7 +190,7 @@ def build() -> int:
 def main() -> int:
     force_utf8_output()
     hwnd = build()
-    user32.ShowWindow(hwnd, SW_SHOWNORMAL)
+    user32.ShowWindow(hwnd, SW_SHOWNOACTIVATE)
     user32.UpdateWindow(hwnd)
     print(f"검증 대상 창을 띄웠습니다. hwnd={hwnd}  제목={TITLE!r}")
     print("검증기를 다른 터미널에서 실행하세요:")

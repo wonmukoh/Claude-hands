@@ -153,6 +153,27 @@ def _send(hwnd: int, message: int, wparam: int = 0, lparam: int = 0, timeout_ms:
     return int(result.value)
 
 
+def is_button_class(hwnd: int) -> bool:
+    """Whether ``hwnd`` is a classic Win32 button (push, check or radio)."""
+
+    return _class_name(hwnd).lower() == "button"
+
+
+def press_button(hwnd: int) -> None:
+    """Click a Win32 button the way the button itself understands.
+
+    ``BM_CLICK`` is handled inside the control, so the click lands with the
+    window minimised, covered and inactive — and, unlike UI Automation's
+    Invoke on the same button, it leaves the foreground where it was.
+    """
+
+    _send(hwnd, BM_CLICK)
+
+
+def button_check_state(hwnd: int) -> int:
+    return _send(hwnd, BM_GETCHECK)
+
+
 def role_for(hwnd: int) -> str:
     """Classify a control by window class, refining buttons by their style."""
 

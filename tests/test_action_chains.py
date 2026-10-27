@@ -879,3 +879,66 @@ def test_strategy_names_report_the_engine_that_actually_ran(monkeypatch):
     session = make_session({"e1": (node, element)})
 
     assert actions.click(session, "e1").strategy == "win32:toggle"
+
+
+# --------------------------------------------------------------------------
+# Classic Win32 buttons seen through UIA
+# --------------------------------------------------------------------------
+
+
+@pytest.fixture
+def buttons(monkeypatch):
+    """Stand-ins for the button messages, recording what was sent."""
+
+    sent: list[tuple[str, int]] = []
+    states: dict[int, int] = {}
+
+    def press(hwnd):
+        sent.append(("BM_CLICK", hwnd))
+        states[hwnd] = 0 if states.get(hwnd) else 1
+
+    monkeypatch.setattr(actions, "is_button_class", lambda hwnd: True)
+    monkeypatch.setattr(actions, "press_button", press)
+    monkeypatch.setattr(actions, "button_check_state", lambda hwnd: states.get(hwnd, 0))
+    return sent
+
+
+def test_a_win32_push_button_is_pressed_by_message_not_uia_invoke(rec, buttons):
+    # UIA's Invoke on these activates their window — measured on a message
+    # box's 확인, which took the foreground from the user's Acrobat.
+    node = button("확인", hwnd=4242, class_name="Button")
+    invoke = FakePattern()
+    session = make_session({"e1": (node, FakeElement(node, {"invoke": invoke}))})
+
+    result = actions.click(session, "e1")
+
+    assert result.strategy == "message:BM_CLICK"
+    assert buttons == [("BM_CLICK", 4242)]
+    assert invoke.calls == []
+
+
+def test_a_win32_checkbox_is_toggled_by_message_and_reads_back(rec, buttons):
+    node = NodeInfo(role="checkbox", name="알림 받기", class_name="Button", hwnd=77,
+                    patterns=("toggle",), toggle_state="off")
+    toggle = FakePattern(CurrentToggleState=0)
+    session = make_session({"e1": (node, FakeElement(node, {"toggle": toggle}))})
+
+    result = actions.toggle(session, "e1", to=True)
+
+    assert result.strategy == "message:BM_CLICK"
+    assert "on" in result.detail
+    assert toggle.calls == []
+
+    again = actions.toggle(session, "e1", to=True)
+    assert again.strategy == "noop"
+    assert buttons == [("BM_CLICK", 77)]
+
+
+def test_buttons_that_are_not_win32_buttons_still_use_uia(rec, buttons):
+    # A WPF or UWP button has no HWND of its own.
+    node = button("저장", hwnd=0, class_name="Button")
+    invoke = FakePattern()
+    session = make_session({"e1": (node, FakeElement(node, {"invoke": invoke}))})
+
+    assert actions.click(session, "e1").strategy == "uia:invoke"
+    assert buttons == []

@@ -31,6 +31,7 @@ from .win32.input import (
     send_text_chars,
     set_window_text,
 )
+from .win32.controls import button_check_state, is_button_class, press_button
 from .win32.windows import Rect, deepest_child_at
 
 
@@ -125,6 +126,12 @@ def _call(element, func, *args, **kwargs):
     if _engine(element) == "win32":
         return func(*args, **kwargs)
 
+    if _engine(element) == "mshtml":
+        # IE's objects only work from the apartment kind they were fetched in.
+        from .uia.core import get_sta_worker
+
+        return get_sta_worker().call(func, *args, **kwargs)
+
     from .uia.core import get_worker
 
     return get_worker().call(func, *args, **kwargs)
@@ -160,6 +167,12 @@ def click(
         raise ActionFailedError(f"{label} 은(는) 비활성 상태라 누를 수 없습니다.")
 
     simple_left = button == "left" and not double and not modifiers
+    native = _win32_button(element, node)
+    if simple_left and not force_message and native:
+        attempts.append("message:BM_CLICK")
+        press_button(native)
+        return ActionResult(True, "click", "message:BM_CLICK", label, attempts=attempts)
+
     if simple_left and not force_message:
         for strategy, runner in _click_pattern_chain(element, node):
             attempts.append(strategy)
@@ -212,6 +225,30 @@ def click(
         detail=f"좌표 {x},{y} → hwnd={target_hwnd}",
         attempts=attempts,
     )
+
+
+def _win32_button(element, node: NodeInfo) -> int:
+    """The HWND of a classic Win32 button behind a UIA element, or 0.
+
+    UI Automation's proxy for these activates the window when it invokes or
+    toggles them. Measured with the user's Acrobat in front: `uia:toggle` on a
+    plain checkbox brought its window to the foreground, and `uia:invoke` on a
+    message box's 확인 handed the foreground to the box. The same buttons
+    pressed with BM_CLICK left the foreground alone. These are the most common
+    controls there are — every message box is made of them — so they go
+    through the button's own message first.
+    """
+
+    if _engine(element) != "uia" or not node.hwnd:
+        return 0
+    if node.role not in {"button", "checkbox", "radiobutton"}:
+        return 0
+    if (node.class_name or "").lower() != "button":
+        return 0
+    try:
+        return node.hwnd if is_button_class(node.hwnd) else 0
+    except Exception:  # noqa: BLE001 - a window that vanished is not a button
+        return 0
 
 
 def _session_engine(session: WindowSession) -> str:
@@ -690,6 +727,9 @@ def select(session: WindowSession, ref: str, *, add: bool = False) -> ActionResu
 def toggle(session: WindowSession, ref: str, *, to: bool | None = None) -> ActionResult:
     node, element = session.resolve(ref)
     label = _target_label(node)
+    native = _win32_button(element, node)
+    if native:
+        return _toggle_button(native, label, to)
     pattern = element.pattern("toggle")
     if pattern is None:
         return click(session, ref)
@@ -715,6 +755,31 @@ def toggle(session: WindowSession, ref: str, *, to: bool | None = None) -> Actio
         )
     except Exception as exc:  # noqa: BLE001
         raise ActionFailedError(f"{label} 토글 실패: {_short(exc)}") from exc
+
+
+def _toggle_button(hwnd: int, label: str, to: bool | None) -> ActionResult:
+    """Toggle a Win32 checkbox or radio button without activating its window."""
+
+    from .uia.core import TOGGLE_STATES
+
+    current = button_check_state(hwnd)
+    if to is not None:
+        want = 1 if to else 0
+        if current == want:
+            return ActionResult(
+                True, "toggle", "noop", label, detail=f"이미 {'켜짐' if to else '꺼짐'} 상태"
+            )
+        # A three-state box passes through "indeterminate" on the way.
+        for _ in range(3):
+            press_button(hwnd)
+            if button_check_state(hwnd) == want:
+                break
+    else:
+        press_button(hwnd)
+    state = button_check_state(hwnd)
+    return ActionResult(
+        True, "toggle", "message:BM_CLICK", label, detail=f"현재 상태: {TOGGLE_STATES.get(state, state)}"
+    )
 
 
 def expand(session: WindowSession, ref: str, *, collapse: bool = False) -> ActionResult:
