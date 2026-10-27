@@ -167,7 +167,7 @@ def click(
     node, element = session.resolve(ref)
     attempts: list[str] = []
     label = _target_label(node)
-    _refuse_user_only(node.name, node.automation_id, node.role)
+    _refuse_user_only(node.name, node.automation_id, node.role, _inside_pressable(element))
 
     if not node.enabled:
         raise ActionFailedError(f"{label} 은(는) 비활성 상태라 누를 수 없습니다.")
@@ -271,7 +271,9 @@ def _bare_labels(text: str) -> set[str]:
     return {bare(re.sub(r"[(\[（［].*?[)\]）］]", "", text or "")), bare(text or "")}
 
 
-def _refuse_user_only(name: str, automation_id: str = "", role: str = "") -> None:
+def _refuse_user_only(
+    name: str, automation_id: str = "", role: str = "", inside_pressable: bool = True
+) -> None:
     """Refuse to press 결재올림·발송·결재 and their kin.
 
     Refused, not warned about: a warning arrives after the click, and by then
@@ -285,6 +287,9 @@ def _refuse_user_only(name: str, automation_id: str = "", role: str = "") -> Non
         return
     if role in CHOOSING_ROLES:
         return
+    if role == "text" and not inside_pressable:
+        # A table cell reading 결재 in the 결재경로 table presses nothing.
+        return
     if _bare_labels(name) & USER_ONLY_LABELS or (automation_id or "").lower() in USER_ONLY_IDS:
         shown = (name or automation_id).strip()
         raise UserOnlyActionError(
@@ -292,6 +297,12 @@ def _refuse_user_only(name: str, automation_id: str = "", role: str = "") -> Non
             "결재를 올리거나 승인하거나 문서를 보내는 일은 되돌릴 수 없어서 사용자의 몫입니다. "
             "준비가 끝났다고 사용자에게 알리세요. 저장만 필요하면 임시저장을 누르면 됩니다."
         )
+
+
+def _inside_pressable(element) -> bool:
+    # Only the web engine knows where a piece of text sits; anywhere else,
+    # text is assumed to be a caption, which is the cautious answer.
+    return bool(getattr(element, "inside_pressable", True))
 
 
 def _win32_button(element, node: NodeInfo) -> int:
@@ -615,7 +626,7 @@ def press_keys(
     if ref:
         node, _element = session.resolve(ref)
         # Enter on a focused link presses it as surely as a click does.
-        _refuse_user_only(node.name, node.automation_id, node.role)
+        _refuse_user_only(node.name, node.automation_id, node.role, _inside_pressable(_element))
         target_hwnd = _owning_hwnd(session, node)
         label = _target_label(node)
 
@@ -653,7 +664,7 @@ def focus(session: WindowSession, ref: str) -> ActionResult:
     node, element = session.resolve(ref)
     label = _target_label(node)
     # Focus it, then send Enter to the window: the same press by two steps.
-    _refuse_user_only(node.name, node.automation_id, node.role)
+    _refuse_user_only(node.name, node.automation_id, node.role, _inside_pressable(element))
     try:
         _call(element, lambda: element.com.SetFocus())
         return ActionResult(True, "focus", f"{_engine(element)}:SetFocus", label)

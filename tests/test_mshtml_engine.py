@@ -412,3 +412,20 @@ def test_known_controls_get_a_call_pattern_and_unknown_ones_say_why_not(monkeypa
     assert "call_control_method" in attach.help_text
     assert "control" not in other.patterns
     assert "허용 목록이 없어" in other.help_text
+
+
+def test_text_says_whether_a_click_on_it_would_press_something(monkeypatch):
+    raw = RS.join([
+        US.join(["기안", "5", "1", "0"]),
+        record(50, -1, "text", "SPAN", "", "", "", "결재올림", "", "press"),
+        record(60, -1, "text", "TD", "", "", "", "결재", "", ""),
+    ])
+    elements = {}
+    monkeypatch.setattr(core, "run_script", lambda document, source: raw)
+    root = NodeInfo(role="document")
+    core._walk_document(object(), server_hwnd=9, frames=(), origin=None, parent=root,
+                        depth=0, element_index=elements, budget=[100])
+
+    caption, cell = (elements[id(node)] for node in root.children)
+    assert caption.inside_pressable is True
+    assert cell.inside_pressable is False

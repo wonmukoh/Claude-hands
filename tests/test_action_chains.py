@@ -1021,6 +1021,22 @@ def test_the_caption_next_to_the_link_is_refused_too(rec, monkeypatch):
     assert rec.clicks == []
 
 
+def test_a_table_cell_reading_approval_is_not_a_button(rec, monkeypatch):
+    # The 결재경로 table's 처리방법 column says 결재 in a plain cell. The page
+    # reports it sits in nothing pressable, so it is not refused — unlike the
+    # caption of the 결재올림 link, which does.
+    monkeypatch.delenv(actions.ALLOW_SEND_ENV, raising=False)
+    cell = NodeInfo(role="text", name="결재", rect=Rect(100, 200, 180, 228))
+    element = FakeElement(cell)
+    element.inside_pressable = False
+    caption = NodeInfo(role="text", name="결재", rect=Rect(100, 300, 180, 328))
+    session = make_session({"e1": (cell, element), "e2": (caption, FakeElement(caption))})
+
+    assert actions.click(session, "e1").ok
+    with pytest.raises(actions.UserOnlyActionError):
+        actions.click(session, "e2")
+
+
 @pytest.mark.parametrize("name, dom_id", [("임시저장", "savetmpr"), ("결재경로", "reportcours"),
                                           ("발송정보", ""), ("자동저장문서", "autosave")])
 def test_saving_a_draft_and_its_neighbours_are_pressed_as_usual(rec, name, dom_id, monkeypatch):

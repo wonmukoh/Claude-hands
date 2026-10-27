@@ -166,6 +166,15 @@
         }
     }
 
+    // Words inside a link or button are its caption: clicking them presses
+    // it. Words in a plain table cell press nothing.
+    function pressable(n) {
+        for (; n && n.tagName && n.tagName !== 'BODY'; n = n.parentNode) {
+            if (n.tagName === 'A' || n.tagName === 'BUTTON' || n.onclick) return true;
+        }
+        return false;
+    }
+
     for (var j = 0; j < texts.length && count < maxNodes; j++) {
         var holder = all[texts[j]], words = [];
         for (var c = holder.firstChild; c; c = c.nextSibling) {
@@ -174,7 +183,7 @@
                 if (w) words.push(w);
             }
         }
-        if (words.length) emit(texts[j], -1, 'text', holder, words.join(' '), '', '');
+        if (words.length) emit(texts[j], -1, 'text', holder, words.join(' '), '', pressable(holder) ? 'press' : '');
     }
 
     out.unshift([clean(document.title), document.documentMode || '', zoom, count >= maxNodes ? '1' : '0'].join(US));

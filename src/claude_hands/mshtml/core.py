@@ -496,6 +496,7 @@ class WebElement:
         patterns: Optional[dict[str, Any]] = None,
         help_text: str = "",
         hwnd: int = 0,
+        inside_pressable: bool = True,
     ) -> None:
         self.role = role
         self.name = name
@@ -508,6 +509,9 @@ class WebElement:
         self._patterns = patterns or {}
         self.help_text = help_text
         self.hwnd = hwnd
+        # For plain text: whether a click on it lands on a link or button,
+        # which is what decides if 「결재올림」 in it must be refused.
+        self.inside_pressable = inside_pressable
 
     # What the session reads to decide a ref is still alive (lesson 18).
     @property
@@ -734,6 +738,7 @@ def _walk_document(
             patterns=patterns,
             help_text=help_text,
             hwnd=server_hwnd,
+            inside_pressable=role != "text" or state == "press",
         )
         container = by_index.get(parent_index, parent)
         node = element.to_node_info(container.depth + 1)

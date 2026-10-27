@@ -22,6 +22,8 @@ function save() { alert('저장 위치를 고르세요'); note('확인 눌림');
 </table>
 <a href="#" onclick="note('취소 눌림'); return false;">취소</a>
 <a href="#" onclick="save(); return false;">확인</a>
+<table id="route"><tr><td>처리방법</td><td>결재</td></tr></table>
+<a href="#" id="sanctn" onclick="note('결재올림 눌림'); return false;"><span>결재올림</span></a>
 <div id="log"></div>
 <iframe id="frame1" src="inner_edge.html" width="600" height="200"></iframe>
 </body></html>
