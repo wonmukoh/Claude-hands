@@ -45,6 +45,12 @@ pip install --upgrade "git+https://github.com/wonmukoh/Claude-hands"
 | 기본 브랜치 | `claude/windows-program-click-tool-ja9jsw` | 다른 내용의 브랜치로 기본을 바꾸면 그게 설치됨 |
 | 콘솔 스크립트 | `claude-hands-mcp`, `claude-hands` | exe 를 못 찾아 등록 실패 |
 
+**push 할 때는 버전을 올리세요** (`pyproject.toml` 과 `__init__.__version__`).
+버전이 같으면 `pip install --upgrade "git+…"` 가 「이미 만족」으로 보고 **이미 설치된
+PC 는 옛 커밋 그대로 둡니다** — 실측: 52a7a56 이 깔린 venv 에 같은 명령을 돌려도
+52a7a56 그대로였고, 버전만 0.2.0 으로 올리자 바뀌었습니다(2026-10-27). 새로 설치하는
+PC 만 새 코드를 받으니, 이 PC 에서는 티가 안 납니다.
+
 이 셋을 바꿔야 하면 **먼저 MAGISTER 세션에 알리세요.** 그쪽이 모듈을 맞추고 새
 배포본을 올립니다. `doctor` 출력 형식이나 종료 코드를 바꿀 때도 마찬가지입니다 —
 MAGISTER 는 비정상 종료를 경고로 기록합니다.
