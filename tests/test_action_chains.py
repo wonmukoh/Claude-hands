@@ -942,3 +942,236 @@ def test_buttons_that_are_not_win32_buttons_still_use_uia(rec, buttons):
 
     assert actions.click(session, "e1").strategy == "uia:invoke"
     assert buttons == []
+
+
+# --------------------------------------------------------------------------
+# Buttons only the user presses
+# --------------------------------------------------------------------------
+
+
+def link(name, dom_id="", role="hyperlink"):
+    return NodeInfo(role=role, name=name, automation_id=dom_id, patterns=("invoke",),
+                    rect=Rect(100, 200, 180, 228))
+
+
+@pytest.mark.parametrize(
+    "node",
+    [link("결재올림", "sanctn"), link("결재 올림"), link("결재올림(F2)"), link("[발송]"),
+     link("발송"), link("발송의뢰"), link("", "sanctn"), link("결재상신", role="button")],
+    ids=lambda n: n.name or n.automation_id,
+)
+def test_approval_and_sending_buttons_are_never_pressed(rec, node, monkeypatch):
+    monkeypatch.delenv(actions.ALLOW_SEND_ENV, raising=False)
+    pattern = FakePattern()
+    session = make_session({"e1": (node, FakeElement(node, {"invoke": pattern}))})
+
+    with pytest.raises(actions.UserOnlyActionError, match="사용자가 직접"):
+        actions.click(session, "e1")
+
+    assert pattern.calls == [] and rec.clicks == []
+
+
+def test_the_caption_next_to_the_link_is_refused_too(rec, monkeypatch):
+    # The page lists 결재올림 a second time as plain text, and a click on that
+    # text falls through to a coordinate click, onto the link underneath.
+    monkeypatch.delenv(actions.ALLOW_SEND_ENV, raising=False)
+    text = NodeInfo(role="text", name="결재올림", rect=Rect(100, 200, 180, 228))
+    session = make_session({"e1": (text, FakeElement(text))})
+
+    with pytest.raises(actions.UserOnlyActionError):
+        actions.click(session, "e1")
+    assert rec.clicks == []
+
+
+@pytest.mark.parametrize("name, dom_id", [("임시저장", "savetmpr"), ("결재경로", "reportcours"),
+                                          ("발송정보", ""), ("자동저장문서", "autosave")])
+def test_saving_a_draft_and_its_neighbours_are_pressed_as_usual(rec, name, dom_id, monkeypatch):
+    monkeypatch.delenv(actions.ALLOW_SEND_ENV, raising=False)
+    node = link(name, dom_id)
+    pattern = FakePattern()
+    session = make_session({"e1": (node, FakeElement(node, {"invoke": pattern}))})
+
+    result = actions.click(session, "e1")
+
+    assert result.ok and pattern.calls == [("Invoke",)]
+
+
+def test_enter_aimed_at_the_send_button_is_refused(rec, monkeypatch):
+    monkeypatch.delenv(actions.ALLOW_SEND_ENV, raising=False)
+    node = link("결재올림", "sanctn")
+    session = make_session({"e1": (node, FakeElement(node))})
+
+    with pytest.raises(actions.UserOnlyActionError):
+        actions.press_keys(session, "enter", ref="e1")
+    assert rec.keys == []
+
+
+def test_focusing_the_send_button_is_refused(rec, monkeypatch):
+    monkeypatch.delenv(actions.ALLOW_SEND_ENV, raising=False)
+    node = link("발송")
+    element = FakeElement(node)
+    session = make_session({"e1": (node, element)})
+
+    with pytest.raises(actions.UserOnlyActionError):
+        actions.focus(session, "e1")
+    assert element.focus_calls == 0
+
+
+def test_a_menu_path_ending_in_send_is_refused_before_anything_opens(rec, monkeypatch):
+    monkeypatch.delenv(actions.ALLOW_SEND_ENV, raising=False)
+    session = make_session({})
+
+    with pytest.raises(actions.UserOnlyActionError):
+        actions.menu_select(session, "파일 > 발송")
+
+
+def test_only_whoever_starts_the_server_can_lift_it(rec, monkeypatch):
+    monkeypatch.setenv(actions.ALLOW_SEND_ENV, "1")
+    node = link("결재올림", "sanctn")
+    pattern = FakePattern()
+    session = make_session({"e1": (node, FakeElement(node, {"invoke": pattern}))})
+
+    assert actions.click(session, "e1").ok and pattern.calls == [("Invoke",)]
+
+
+# --------------------------------------------------------------------------
+# call_control
+# --------------------------------------------------------------------------
+
+
+class FakeControl:
+    """The page side of a control call: records it and answers as told."""
+
+    def __init__(self, control, answers=None, effects=None):
+        self.control = control
+        self.calls: list[tuple] = []
+        self.answers = answers or {}
+        self.effects = effects or {}
+
+    def Call(self, name, spec, args, timeout=30.0):
+        self.calls.append((name, tuple(args)))
+        if name in self.effects:
+            self.effects[name](args)
+        return self.answers.get(name)
+
+
+class FakeWebElement(FakeElement):
+    engine = "mshtml"
+
+
+def control_session(*controls):
+    nodes = {}
+    for index, pattern in enumerate(controls, start=1):
+        node = NodeInfo(role="custom", name=f"control{index}", patterns=("control",))
+        nodes[f"e{index}"] = (node, FakeWebElement(node, {"control": pattern}))
+    return make_session(nodes)
+
+
+def hwp(**kw):
+    from claude_hands.mshtml.activex import HWP_CONTROL
+
+    return FakeControl(HWP_CONTROL, **kw)
+
+
+def attachments(**kw):
+    from claude_hands.mshtml.activex import HSATTACH_CONTROL
+
+    return FakeControl(HSATTACH_CONTROL, **kw)
+
+
+def test_a_read_returns_the_controls_answer(rec):
+    control = hwp(answers={"GetTextFile": "본문"})
+    session = control_session(control)
+
+    result = actions.call_control(session, "e1", "GetTextFile", ["UNICODE", ""])
+
+    assert result.ok and result.value == "본문"
+    assert result.strategy == "mshtml:control.GetTextFile"
+    assert control.calls == [("GetTextFile", ("UNICODE", ""))]
+
+
+def test_a_save_is_confirmed_by_the_file_it_left(rec, tmp_path):
+    target = tmp_path / "기안.hwp"
+    control = hwp(answers={"SaveAs": True},
+                  effects={"SaveAs": lambda args: target.write_bytes(b"x" * 10)})
+
+    result = actions.call_control(control_session(control), "e1", "SaveAs", [str(target), "HWP", ""])
+
+    assert result.ok and "10바이트" in result.detail
+
+
+def test_a_save_that_left_no_file_is_a_failure(rec, tmp_path):
+    control = hwp(answers={"SaveAs": True})
+
+    result = actions.call_control(
+        control_session(control), "e1", "SaveAs", [str(tmp_path / "기안.hwp"), "HWP", ""]
+    )
+
+    assert not result.ok and "생기지 않았습니다" in result.detail
+
+
+def test_an_existing_file_is_not_saved_over_unless_asked(rec, tmp_path):
+    target = tmp_path / "기안.hwp"
+    target.write_bytes(b"old")
+    control = hwp(answers={"SaveAs": True}, effects={"SaveAs": lambda args: target.write_bytes(b"new")})
+    session = control_session(control)
+
+    with pytest.raises(Exception, match="overwrite=True"):
+        actions.call_control(session, "e1", "SaveAs", [str(target), "HWP", ""])
+    assert control.calls == [] and target.read_bytes() == b"old"
+
+    assert actions.call_control(session, "e1", "SaveAs", [str(target), "HWP", ""], overwrite=True).ok
+
+
+def test_field_text_is_read_back_after_it_is_put(rec):
+    control = hwp(answers={"GetFieldText": "새 제목\r\n"})
+
+    result = actions.call_control(control_session(control), "e1", "PutFieldText", ["제목", "새 제목"])
+
+    assert result.ok
+    assert control.calls == [("PutFieldText", ("제목", "새 제목")), ("GetFieldText", ("제목",))]
+
+
+def test_field_text_that_did_not_take_is_a_failure(rec):
+    # A 누름틀 name that does not exist takes the text without complaint.
+    control = hwp(answers={"GetFieldText": ""})
+
+    result = actions.call_control(control_session(control), "e1", "PutFieldText", ["졔목", "새 제목"])
+
+    assert not result.ok and "GetFieldList" in result.detail
+
+
+def test_a_control_saying_false_to_a_change_is_a_failure(rec):
+    control = hwp(answers={"MoveToField": False})
+
+    assert not actions.call_control(control_session(control), "e1", "MoveToField", ["없는칸"]).ok
+
+
+def test_a_read_only_server_reads_but_does_not_save(rec, tmp_path):
+    control = hwp(answers={"PageCount": 2})
+    session = control_session(control)
+
+    assert actions.call_control(session, "e1", "PageCount", read_only=True).value == 2
+    with pytest.raises(ActionFailedError, match="읽기 전용"):
+        actions.call_control(session, "e1", "SaveAs", [str(tmp_path / "a.hwp")], read_only=True)
+    assert control.calls == [("PageCount", ())]
+
+
+@pytest.mark.parametrize("method, chosen", [("AddFile", 2), ("GetTextFile", 1)])
+def test_without_a_ref_the_control_that_has_the_method_is_used(rec, tmp_path, method, chosen):
+    present = tmp_path / "붙임.pdf"
+    present.write_bytes(b"%PDF")
+    controls = [hwp(), attachments()]
+    args = [str(present)] if method == "AddFile" else ["TEXT", ""]
+
+    actions.call_control(control_session(*controls), None, method, args)
+
+    assert [len(c.calls) for c in controls] == [int(chosen == 1), int(chosen == 2)]
+
+
+def test_a_ref_that_is_not_a_control_is_refused(rec):
+    node = button()
+    session = make_session({"e1": (node, FakeWebElement(node, {"invoke": FakePattern()}))})
+
+    with pytest.raises(ActionFailedError, match="컨트롤이 아닙니다"):
+        actions.call_control(session, "e1", "GetTextFile")

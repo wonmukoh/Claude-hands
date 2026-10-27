@@ -174,6 +174,7 @@ claude mcp add claude-hands --env CLAUDE_HANDS_READONLY=1 -- claude-hands-mcp
 | `scroll` | 스크롤 (단계 또는 퍼센트) |
 | `set_element_state` | 선택·체크·펼치기·포커스·값 설정 |
 | `menu_select` | `"파일 > 다른 이름으로 저장"` 처럼 메뉴 따라가기 |
+| `call_control_method` | 웹 화면 안 한글 컨트롤·첨부 부품의 허용된 메서드 호출 (읽기·쓰기·로컬 저장) |
 | `wait_for_element` | 요소가 나타나거나 사라질 때까지 대기 |
 | `control_window` | 최소화·복원·최대화·이동·닫기 |
 | `detach_window` | 연결 해제 |
@@ -289,6 +290,7 @@ app.screenshot().to_png()                    # 가려져 있어도 실제 픽셀
 * **동작 성공 ≠ 원하는 결과.** 클릭은 "명령을 전달했다"는 뜻이지 "앱이 원하는 일을 했다"는 뜻이 아닙니다. Windows 는 이를 구분할 방법을 주지 않습니다(실측 결과 `SendMessage` 반환값은 실제 효과와 무관했습니다). 중요한 동작 뒤에는 `snapshot` 이나 `wait_for` 로 결과를 확인하세요.
 * **최소화 상태를 싫어하는 앱.** 일부 프로그램은 최소화되어 있으면 특정 명령을 무시합니다(실측: winecfg 의 Cancel). 그럴 때는 `control_window(action="restore")` 로 활성화 없이 복원한 뒤 조작하세요.
 * **메뉴 읽기.** `menu_select` 는 창의 실제 메뉴에서 명령 ID 를 찾아 `WM_COMMAND` 를 보냅니다. 메뉴가 없거나 다른 프로세스에서 읽을 수 없으면 UI 트리 경로로 자동으로 내려갑니다.
+* **결재올림·발송은 누르지 않습니다.** 문서를 다른 사람에게 넘기는 버튼(결재올림·상신·발송 등, id `sanctn`)은 click·Enter·포커스·메뉴 어느 길로도 거절합니다. 서버를 띄우는 사람만 `CLAUDE_HANDS_ALLOW_SEND=1` 로 풀 수 있습니다. 임시저장은 됩니다.
 * **DPI.** 프로세스 시작 시 per-monitor v2 로 설정합니다. 고DPI 다중 모니터에서도 좌표가 어긋나지 않습니다.
 
 ---
@@ -366,7 +368,7 @@ src/claude_hands/
   session.py         창 세션 · ref 레지스트리 · 자동 재연결
   actions.py         클릭/입력/스크롤 … 3단 전략 체인
   api.py             파이썬 파사드
-  server.py          MCP 서버 (도구 15개)
+  server.py          MCP 서버 (도구 16개)
   cli.py             명령줄
 ```
 

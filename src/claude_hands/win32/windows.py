@@ -129,13 +129,21 @@ class WindowInfo:
 
 
 def _window_text(hwnd: int) -> str:
+    """A window's title, read without sending the window a message.
+
+    GetWindowText sends WM_GETTEXT when the window belongs to this process,
+    and this process does own windows: IE's marshalling leaves an
+    ``Internet Explorer_Hidden`` and an ``IME`` window on the web engine's
+    worker thread. Measured: after a page opened a dialog during a call,
+    list_windows sent to those and never came back. InternalGetWindowText
+    reads the stored title — what GetWindowText returns for any other
+    process's window anyway.
+    """
+
     from .defs import user32
 
-    length = user32.GetWindowTextLengthW(hwnd)
-    if length <= 0:
-        return ""
-    buf = ctypes.create_unicode_buffer(length + 1)
-    user32.GetWindowTextW(hwnd, buf, length + 1)
+    buf = ctypes.create_unicode_buffer(1024)
+    user32.InternalGetWindowText(hwnd, buf, len(buf))
     return buf.value
 
 

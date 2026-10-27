@@ -12,6 +12,7 @@ about apartments.
 
 from __future__ import annotations
 
+import functools
 import os
 import queue
 import re
@@ -86,12 +87,65 @@ def init_thread_com(comtypes_module: Any) -> str:
 # --------------------------------------------------------------------------
 
 
+QS_ALLINPUT = 0x04FF
+MWMO_INPUTAVAILABLE = 0x0004
+PM_REMOVE = 0x0001
+INFINITE = 0xFFFFFFFF
+WAIT_OBJECT_0 = 0
+
+
+@functools.lru_cache(maxsize=1)
+def _message_api():  # pragma: no cover - Windows only
+    import ctypes
+    from ctypes import wintypes
+
+    # A private instance, so these signatures cannot clash with anyone else's.
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    user32.PeekMessageW.argtypes = [
+        ctypes.POINTER(wintypes.MSG), wintypes.HWND, wintypes.UINT, wintypes.UINT, wintypes.UINT,
+    ]
+    user32.PeekMessageW.restype = wintypes.BOOL
+    user32.TranslateMessage.argtypes = [ctypes.POINTER(wintypes.MSG)]
+    user32.DispatchMessageW.argtypes = [ctypes.POINTER(wintypes.MSG)]
+    user32.MsgWaitForMultipleObjectsEx.argtypes = [
+        wintypes.DWORD, ctypes.POINTER(wintypes.HANDLE), wintypes.DWORD, wintypes.DWORD, wintypes.DWORD,
+    ]
+    user32.MsgWaitForMultipleObjectsEx.restype = wintypes.DWORD
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateEventW.argtypes = [ctypes.c_void_p, wintypes.BOOL, wintypes.BOOL, wintypes.LPCWSTR]
+    kernel32.CreateEventW.restype = wintypes.HANDLE
+    kernel32.SetEvent.argtypes = [wintypes.HANDLE]
+    return ctypes, wintypes, user32, kernel32
+
+
+def wait_pumping(handle: Any = None, timeout_ms: int = INFINITE) -> bool:  # pragma: no cover
+    """Wait for ``handle`` or ``timeout_ms``, dispatching this thread's messages.
+
+    True when ``handle`` was signalled. With no handle it is a sleep that keeps
+    the thread's windows answering.
+    """
+
+    ctypes, wintypes, user32, _kernel32 = _message_api()
+    handles = (wintypes.HANDLE * 1)(handle) if handle else None
+    result = user32.MsgWaitForMultipleObjectsEx(
+        1 if handle else 0, handles, timeout_ms, QS_ALLINPUT, MWMO_INPUTAVAILABLE
+    )
+    message = wintypes.MSG()
+    while user32.PeekMessageW(ctypes.byref(message), None, 0, 0, PM_REMOVE):
+        user32.TranslateMessage(ctypes.byref(message))
+        user32.DispatchMessageW(ctypes.byref(message))
+    return bool(handle) and result == WAIT_OBJECT_0
+
+
 class UiaWorker:
     """Runs every UIA call on one dedicated MTA thread."""
 
     def __init__(self, name: str = "claude-hands-uia", apartment: str = "mta") -> None:
         self._wanted = apartment
         self._queue: "queue.Queue[tuple[Callable[..., Any], tuple, dict, Future]]" = queue.Queue()
+        # A single-threaded apartment owns windows, so it waits for work by
+        # pumping messages rather than blocking — see _next.
+        self._wake = _message_api()[3].CreateEventW(None, False, False, None) if apartment == "sta" else None
         self._thread = threading.Thread(target=self._run, name=name, daemon=True)
         self._started = threading.Event()
         self._error: Optional[BaseException] = None
@@ -123,7 +177,7 @@ class UiaWorker:
             return
         self._started.set()
         while True:
-            item = self._queue.get()
+            item = self._next()
             if item is self._stop:
                 break
             func, args, kwargs, future = item
@@ -139,16 +193,35 @@ class UiaWorker:
         except Exception:  # noqa: BLE001 - shutdown best effort
             pass
 
+    def _next(self):  # pragma: no cover - Windows only
+        if self._wake is None:
+            return self._queue.get()
+        # IE's marshalling leaves an `Internet Explorer_Hidden` and an `IME`
+        # window on this thread. A thread that blocks without pumping leaves
+        # them deaf, and whatever sends to them waits with them — measured:
+        # list_windows hung for good on this process's own IME window, and a
+        # settings broadcast from any program on the desktop would hang too.
+        while True:
+            try:
+                return self._queue.get_nowait()
+            except queue.Empty:
+                wait_pumping(self._wake)
+
+    def _put(self, item) -> None:
+        self._queue.put(item)
+        if self._wake is not None:
+            _message_api()[3].SetEvent(self._wake)
+
     def submit(self, func: Callable[..., T], *args: Any, **kwargs: Any) -> "Future[T]":
         future: "Future[T]" = Future()
-        self._queue.put((func, args, kwargs, future))
+        self._put((func, args, kwargs, future))
         return future
 
     def call(self, func: Callable[..., T], *args: Any, timeout: float = 60.0, **kwargs: Any) -> T:
         return self.submit(func, *args, **kwargs).result(timeout=timeout)
 
     def close(self) -> None:
-        self._queue.put(self._stop)  # type: ignore[arg-type]
+        self._put(self._stop)
 
 
 _worker: Optional[UiaWorker] = None

@@ -153,6 +153,24 @@ class Window:
     def menu(self, path: str) -> _actions.ActionResult:
         return _actions.menu_select(self._session, path)
 
+    def call(
+        self,
+        method: str,
+        *args,
+        ref: str | None = None,
+        overwrite: bool = False,
+        timeout: float = 30.0,
+    ) -> _actions.ActionResult:
+        """Call an allowlisted method of a control in the page; the answer is ``.value``.
+
+        ``win.call("GetTextFile", "UNICODE", "")`` reads the 한글 control's body;
+        ``win.call("SaveAs", r"C:\\임시\\기안.hwp", "HWP", "")`` saves it.
+        """
+
+        return _actions.call_control(
+            self._session, ref, method, args, overwrite=overwrite, timeout=timeout
+        )
+
     def wait_for(self, query: str, **kwargs) -> _actions.ActionResult:
         return _actions.wait_for(self._session, query, **kwargs)
 

@@ -63,12 +63,13 @@ src/claude_hands/
   office/core.py     Office 문서 모델 엔진 (PowerPoint · Word · Excel)
   office/hwp.py      한글 어댑터 (ROT 로 붙음 · 누름틀)
   mshtml/core.py     IE 웹 컨트롤 안 페이지의 DOM 엔진 (K-에듀파인 WXSClient 등)
+  mshtml/activex.py  페이지 안 ActiveX 메서드 허용 목록 · 인자·경로 검사
   mshtml/collect.js  페이지 안에서 한 번에 요소를 모으는 스크립트 (IE5 문법)
   elements.py        트리 모델 · 가지치기 · 렌더링 · 검색   (플랫폼 무관)
   session.py         창 세션 · ref 레지스트리 · 자동 재연결 · 엔진 선택
   actions.py         클릭/입력/스크롤 … 전략 체인
   api.py             파이썬 파사드
-  server.py          MCP 서버 (도구 15개)
+  server.py          MCP 서버 (도구 16개)
   cli.py             명령줄
 ```
 
@@ -94,7 +95,7 @@ src/claude_hands/
 ## 검증하는 법
 
 ```bash
-pytest -q                                    # 232개
+pytest -q                                    # 312개
 
 # 남의 파일에 쓰지 않기 위한 전용 대상 창 (입력란·체크박스·대화상자 버튼)
 python examples/target_app.py
@@ -579,6 +580,32 @@ UIA 의 Win32 버튼 프록시가 누를 때 창을 활성화하는 것으로 �
 프로세스에 전경을 가져갈 권한을 줍니다 — 알림창이 닫히며 주인 창을 활성화할 때
 그 권한이 쓰인 것으로 봅니다. 도구 탓이 아니지만 **검증 결과에서 지우지
 마세요.** WXSClient 도 사용자가 크롬에서 누르는 순간 뜨는 프로세스입니다.
+
+### 32. 페이지 안 컨트롤의 메서드는 허용 목록으로, 페이지에게 시켜서 부릅니다
+
+`call_control_method` 는 `mshtml/activex.py` 의 clsid 별 허용 목록(읽기·쓰기·로컬
+저장)에 있는 것만 부릅니다. 다른 파일 열기·인쇄·매크로·`DoPost`(서버 전송)는 일부러
+뺐습니다. 호출은 교훈 28 처럼 `setTimeout` 으로 페이지에 넘기고 결과를 문서 속성으로
+받습니다 — 대화상자가 뜨면 timeout 뒤에 그렇다고 말하고 돌아옵니다(실측 2.1초).
+저장은 파일이 새로 생겼는지, `PutFieldText` 는 되읽어서 확인합니다. 한글 OCX 는
+32비트라 시험 창에서는 DOM 요소로 같은 경로를 검증했습니다(18/18, 보임·최소화).
+
+### 33. STA 워커는 메시지를 돌려야 합니다
+
+페이지가 대화상자를 여는 동안 호출하면 IE 마샬링이 **우리 프로세스의 STA 워커
+스레드에** `Internet Explorer_Hidden`·`IME` 창을 만듭니다. 워커가 큐에서 그냥 막혀
+있으면 그 창들이 응답하지 않고, `GetWindowText`(자기 프로세스 창이면
+`WM_GETTEXT` 를 보냄)를 쓰던 `list_windows` 가 **영원히 멈췄습니다.** 다른 프로그램의
+설정 브로드캐스트도 같이 멈춥니다. 그래서 STA 워커는 `MsgWaitForMultipleObjectsEx`
+로 메시지를 돌리며 일을 기다리고, 창 제목은 `InternalGetWindowText` 로 읽습니다.
+
+### 34. 결재올림·발송은 사용자 몫입니다
+
+사용자: 「발송은 내가 하더라도 임시저장은 하게 해줘」. 경고는 누른 뒤에 도착하므로
+**거절합니다**(`actions._refuse_user_only`). 이름(괄호·공백 무시)이나 id `sanctn` 으로
+잡고, 역할은 보지 않습니다 — 페이지가 링크 글자를 `text` 로 한 번 더 내놓고, 그 글자를
+누르면 좌표 클릭이 링크에 떨어지기 때문입니다. click·press_keys(ref)·focus·menu_select
+모두 막습니다. 서버를 띄우는 사람만 `CLAUDE_HANDS_ALLOW_SEND=1` 로 풉니다.
 
 ## 지금까지 검증된 것
 

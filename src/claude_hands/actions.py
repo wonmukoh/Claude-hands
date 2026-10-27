@@ -15,6 +15,8 @@ from a best-effort synthetic click.
 
 from __future__ import annotations
 
+import os
+import re
 import time
 from dataclasses import dataclass, field
 from typing import Any, Optional
@@ -50,6 +52,8 @@ class ActionResult:
     warning: str = ""
     """Said the action went through, but not that it will have the effect asked
     for. Used where the limit is known in advance and cannot be checked after."""
+    value: Any = None
+    """What a call answered, for actions that ask a question (``call_control``)."""
 
     def describe(self) -> str:
         status = "완료" if self.ok else "실패"
@@ -72,6 +76,7 @@ class ActionResult:
             "detail": self.detail,
             "attempts": self.attempts,
             "warning": self.warning,
+            "value": self.value,
         }
 
 
@@ -162,6 +167,7 @@ def click(
     node, element = session.resolve(ref)
     attempts: list[str] = []
     label = _target_label(node)
+    _refuse_user_only(node.name, node.automation_id)
 
     if not node.enabled:
         raise ActionFailedError(f"{label} 은(는) 비활성 상태라 누를 수 없습니다.")
@@ -225,6 +231,56 @@ def click(
         detail=f"좌표 {x},{y} → hwnd={target_hwnd}",
         attempts=attempts,
     )
+
+
+USER_ONLY_LABELS = {
+    "결재올림", "결재상신", "상신", "발송", "발송처리", "발송의뢰", "즉시발송", "일괄발송",
+}
+"""Buttons that put a document in front of other people, said by their label.
+
+The user's words: "발송은 내가 하더라도 임시저장은 하게 해줘". Preparing a draft
+and saving it is this tool's job; sending it on, for approval or out of the
+school, is the user's, because it cannot be taken back.
+"""
+
+USER_ONLY_IDS = {"sanctn"}
+"""The same buttons by DOM id — K-에듀파인 기안 window's 결재올림 is ``sanctn``."""
+
+ALLOW_SEND_ENV = "CLAUDE_HANDS_ALLOW_SEND"
+
+
+class UserOnlyActionError(ActionFailedError):
+    """Raised for a button the user has kept for themselves."""
+
+
+def _bare_labels(text: str) -> set[str]:
+    # "결재올림(F2)", "[발송]", "발 송" all name the same button: a bracketed
+    # hint is dropped, unless the brackets hold the whole label.
+    def bare(value: str) -> str:
+        return re.sub(r"[^0-9A-Za-z가-힣]", "", value)
+
+    return {bare(re.sub(r"[(\[（［].*?[)\]）］]", "", text or "")), bare(text or "")}
+
+
+def _refuse_user_only(name: str, automation_id: str = "") -> None:
+    """Refuse to press 결재올림·발송 and their kin.
+
+    Refused, not warned about: a warning arrives after the click, and by then
+    the document has gone. The match is on the label whatever the role, because
+    a page lists a link's caption a second time as plain text, and clicking
+    that text lands on the link. Only whoever starts the server can lift this,
+    with ``CLAUDE_HANDS_ALLOW_SEND`` — a caller cannot argue its way past it.
+    """
+
+    if os.environ.get(ALLOW_SEND_ENV, "").lower() in {"1", "true", "yes"}:
+        return
+    if _bare_labels(name) & USER_ONLY_LABELS or (automation_id or "").lower() in USER_ONLY_IDS:
+        shown = (name or automation_id).strip()
+        raise UserOnlyActionError(
+            f"「{shown}」은(는) 사용자가 직접 누르는 버튼이라 이 도구는 누르지 않습니다. "
+            "결재를 올리거나 문서를 보내는 일은 되돌릴 수 없어서 사용자의 몫입니다. "
+            "준비가 끝났다고 사용자에게 알리세요. 저장만 필요하면 임시저장을 누르면 됩니다."
+        )
 
 
 def _win32_button(element, node: NodeInfo) -> int:
@@ -547,6 +603,8 @@ def press_keys(
     label = "창"
     if ref:
         node, _element = session.resolve(ref)
+        # Enter on a focused link presses it as surely as a click does.
+        _refuse_user_only(node.name, node.automation_id)
         target_hwnd = _owning_hwnd(session, node)
         label = _target_label(node)
 
@@ -583,6 +641,8 @@ def focus(session: WindowSession, ref: str) -> ActionResult:
 
     node, element = session.resolve(ref)
     label = _target_label(node)
+    # Focus it, then send Enter to the window: the same press by two steps.
+    _refuse_user_only(node.name, node.automation_id)
     try:
         _call(element, lambda: element.com.SetFocus())
         return ActionResult(True, "focus", f"{_engine(element)}:SetFocus", label)
@@ -932,8 +992,10 @@ def menu_select(session: WindowSession, path: str, *, separator: str = ">") -> A
         menu = read_menu(session.hwnd)
     except ClaudeHandsError:
         menu = []
+    _refuse_user_only(steps[-1])
     if menu:
         item = find_menu_item(menu, steps)
+        _refuse_user_only(item.label)
         command_id = invoke_menu_item(session.hwnd, item)
         return ActionResult(
             True,
@@ -972,3 +1034,133 @@ def menu_select(session: WindowSession, path: str, *, separator: str = ">") -> A
         walked.append(step)
 
     return ActionResult(True, "menu_select", f"{_session_engine(session)}:menu", " > ".join(walked))
+
+
+# --------------------------------------------------------------------------
+# Methods of a page's ActiveX controls
+# --------------------------------------------------------------------------
+
+
+def _control_pattern(element):
+    # Only the web engine has controls to call; asking UIA for an unknown
+    # pattern is an error, not a None.
+    if _engine(element) != "mshtml":
+        return None
+    return element.pattern("control")
+
+
+def _control_target(session: WindowSession, ref: str | None, method: str):
+    """The control to call: the one named, or the only one that has ``method``."""
+
+    if ref:
+        node, element = session.resolve(ref)
+        pattern = _control_pattern(element)
+        if pattern is None:
+            raise ActionFailedError(
+                f"{_target_label(node)} 은(는) 메서드를 부를 수 있는 컨트롤이 아닙니다. "
+                "snapshot 에서 custom 역할로 나온 한글 컨트롤·첨부 부품의 ref 를 쓰세요."
+                + (f" ({node.help_text})" if node.help_text else "")
+            )
+        return node, element, pattern
+
+    def candidates():
+        found = []
+        for name, node in session.refs.items():
+            element = session.elements.get(id(node))
+            pattern = _control_pattern(element) if element is not None else None
+            if pattern is not None:
+                found.append((name, node, pattern))
+        return found
+
+    found = candidates()
+    if not found:
+        session.capture_tree()
+        found = candidates()
+    if not found:
+        raise ActionFailedError(
+            "이 창에서 메서드를 부를 수 있는 컨트롤을 찾지 못했습니다 "
+            f"(엔진={_session_engine(session)}). IE 웹 화면 안의 한글 컨트롤·첨부 부품만 됩니다."
+        )
+    fitting = [entry for entry in found if method in entry[2].control.methods]
+    if len(fitting) == 1 or len(found) == 1:
+        name = (fitting or found)[0][0]
+        node, element = session.resolve(name)
+        return node, element, _control_pattern(element)
+    listed = ", ".join(f"{name} ({pattern.control.label})" for name, _node, pattern in (fitting or found))
+    raise ActionFailedError(f"컨트롤이 여럿입니다. ref 를 지정하세요: {listed}")
+
+
+def _field_parts(text) -> list[str]:
+    from .office.hwp import FIELD_SEPARATOR
+
+    return [part.replace("\r\n", "\n").strip() for part in str(text or "").split(FIELD_SEPARATOR)]
+
+
+def call_control(
+    session: WindowSession,
+    ref: str | None,
+    method: str,
+    args: list | tuple = (),
+    *,
+    overwrite: bool = False,
+    timeout: float = 30.0,
+    read_only: bool = False,
+) -> ActionResult:
+    """Call one allowlisted method of a control embedded in a web page.
+
+    Everything that can be checked is checked before the page sees the call
+    (method, arguments, paths), and everything that can be confirmed after it
+    is: a saved file must exist and be new, and 누름틀 text must read back.
+    """
+
+    from .mshtml.activex import READ, WRITE, check_call, lookup
+
+    node, element, pattern = _control_target(session, ref, method)
+    control = pattern.control
+    spec = lookup(control, method)
+    if read_only and spec.kind != READ:
+        raise ActionFailedError(
+            f"읽기 전용 모드라 {method} 는 부를 수 없습니다. 읽기 메서드만 됩니다:\n{control.describe()}"
+        )
+    checked = check_call(spec, method, list(args), overwrite=overwrite)
+    label = _target_label(node)
+    strategy = f"{_engine(element)}:control.{method}"
+
+    started = time.time()
+    value = _call(element, lambda: pattern.Call(method, spec, checked, timeout))
+    result = ActionResult(True, "call", strategy, label, value=value)
+
+    if spec.path_out is not None:
+        path = checked[spec.path_out]
+        try:
+            stat = os.stat(path)
+        except OSError:
+            stat = None
+        if value is False or stat is None or stat.st_mtime < started - 2:
+            result.ok = False
+            result.detail = (
+                f"{path} 에 새 파일이 생기지 않았습니다 (컨트롤의 답: {value!r}). "
+                "형식 이름이 맞는지, 폴더에 쓸 수 있는지 확인하세요."
+            )
+        else:
+            result.detail = f"저장 확인: {path} ({stat.st_size:,}바이트)"
+    elif value is False and spec.kind != READ:
+        result.ok = False
+        result.detail = f"{control.label}가 False 를 돌려줬습니다 — 동작하지 않은 것으로 봅니다."
+    elif method == "PutFieldText" and checked:
+        # Writing into a 누름틀 that does not exist succeeds silently (lesson 24),
+        # so the fields are read back.
+        read_spec = lookup(control, "GetFieldText")
+        actual = _call(element, lambda: pattern.Call("GetFieldText", read_spec, checked[:1], timeout))
+        wanted = _field_parts(checked[1] if len(checked) > 1 else "")
+        if _field_parts(actual) != wanted:
+            result.ok = False
+            result.detail = (
+                f"넣은 뒤 되읽은 값이 다릅니다: {actual!r}. 누름틀 이름이 맞는지 "
+                "GetFieldList 로 확인하세요."
+            )
+        else:
+            result.detail = "되읽어 확인했습니다."
+    elif spec.kind == WRITE:
+        result.warning = "되읽어 확인할 수 없는 동작입니다. 필요하면 GetTextFile 로 결과를 읽어 보세요."
+    return result

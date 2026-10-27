@@ -76,7 +76,9 @@ mcp = _Server(
         "ref(e12 같은 값)는 snapshot 과 find_elements 가 발급하며, 그 연결이 살아 있는 동안 "
         "같은 요소를 가리킵니다. 스냅샷을 다시 찍어도 앞서 받은 ref 가 그대로 유효합니다.\n\n"
         "클릭 결과는 명령을 전달했다는 뜻이지 앱이 그 일을 했다는 뜻이 아닙니다. "
-        "입력은 다릅니다 — 쓴 뒤 되읽어 확인하므로 완료면 실제로 들어간 것입니다."
+        "입력은 다릅니다 — 쓴 뒤 되읽어 확인하므로 완료면 실제로 들어간 것입니다.\n\n"
+        "결재올림·발송처럼 문서를 다른 사람에게 넘기는 버튼은 사용자가 직접 누르므로 "
+        "이 도구는 거절합니다. 준비가 끝나면 사용자에게 알리세요."
         + (READ_ONLY_NOTICE if READ_ONLY else "")
     ),
 )
@@ -414,6 +416,9 @@ async def click_element(
     기본 왼쪽 클릭은 UI Automation 패턴(Invoke/Toggle/Select)으로 처리하므로
     창이 최소화되어 있어도 동작합니다. 오른쪽/더블/수식키 클릭은 창 메시지로 보냅니다.
 
+    결재올림·발송처럼 문서를 다른 사람에게 넘기는 버튼은 누르지 않고 거절합니다.
+    되돌릴 수 없는 일이라 사용자가 직접 누릅니다. 임시저장은 됩니다.
+
     Args:
         ref: snapshot 또는 find_elements 가 준 ref (예: "e12").
         button: left / right / middle.
@@ -596,6 +601,69 @@ async def set_element_state(
     except ClaudeHandsError as exc:
         return _fail(exc)
     return result.describe()
+
+
+@mcp.tool()
+async def call_control_method(
+    method: str,
+    args: list[str | int | float | bool | None] | None = None,
+    ref: str | None = None,
+    overwrite: bool = False,
+    timeout: float = 30.0,
+    max_chars: int = 8000,
+    hwnd: int | None = None,
+) -> str:
+    """웹 화면에 박힌 ActiveX 컨트롤(한글 컨트롤·첨부 부품)의 메서드를 부릅니다.
+
+    허용 목록에 있는 것만 됩니다 — 읽기(GetTextFile·GetFieldList·GetFieldText·
+    GetPageText·PageCount 등), 쓰기(PutFieldText·MoveToField·SetTextFile·Insert·
+    AddFile 등), 파일 저장(Save·SaveAs·CreatePageImage). 다른 파일 열기·인쇄·
+    매크로·서버 전송은 없습니다. 없는 이름을 부르면 허용 목록을 돌려줍니다.
+
+    호출은 페이지 안에서 실행되므로, 컨트롤이 대화상자를 띄워도 도구가 멈추지 않고
+    timeout 뒤에 그렇다고 알립니다. 파일 경로는 이 PC 의 절대 경로만 되고, 이미 있는
+    파일은 overwrite=True 일 때만 덮어씁니다. 저장은 파일이 새로 생겼는지,
+    PutFieldText 는 되읽어서 확인합니다.
+
+    Args:
+        method: 메서드나 속성 이름, 대소문자 구분 (예: "GetTextFile", "PageCount").
+        args: 인자 목록 — 문자열·숫자·참거짓·null. 누름틀 여러 개는 이름과 값을
+            각각 \\u0002 로 이어 붙입니다.
+        ref: 컨트롤의 ref. 생략하면 그 메서드를 가진 컨트롤이 하나일 때 그것을 씁니다.
+        overwrite: 저장 경로에 이미 파일이 있을 때 덮어쓸지.
+        timeout: 호출이 끝나기를 기다릴 최대 초.
+        max_chars: 돌려줄 값의 최대 글자 수.
+        hwnd: 대상 창.
+    """
+
+    try:
+        session = _session(hwnd)
+        result = await _run(
+            _actions.call_control,
+            session,
+            ref,
+            method,
+            list(args or []),
+            overwrite=overwrite,
+            timeout=max(1.0, min(float(timeout), 300.0)),
+            read_only=READ_ONLY,
+        )
+    except ClaudeHandsError as exc:
+        return _fail(exc)
+    return result.describe() + _format_value(result.value, max_chars)
+
+
+def _format_value(value: Any, max_chars: int) -> str:
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        return f"\n값: {value!r}"
+    if "\x02" in value:
+        parts = value.split("\x02")
+        value = f"(\\u0002 로 구분된 {len(parts)}개) " + " | ".join(parts)
+    if len(value) > max_chars:
+        return f"\n값 (전체 {len(value):,}자 중 앞 {max_chars:,}자):\n{value[:max_chars]}"
+    return f"\n값:\n{value}" if "\n" in value else f"\n값: {value}"
 
 
 @mcp.tool()

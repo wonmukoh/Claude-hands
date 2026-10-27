@@ -84,3 +84,45 @@ def test_module_import_registers_the_preference():
 
     if "comtypes" not in sys.modules:
         assert getattr(sys, "coinit_flags", None) == COINIT_MULTITHREADED
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="needs real windows and a message queue")
+def test_the_sta_workers_windows_keep_answering_while_it_waits_for_work():
+    """IE leaves hidden windows on the STA worker's thread.
+
+    A worker that blocks on its queue without pumping leaves them deaf, and
+    anything that sends to them hangs with them — measured: list_windows, and
+    any program's settings broadcast. Here the worker makes a window of its
+    own, goes idle, and the window must still answer a sent message.
+    """
+
+    import ctypes
+    from ctypes import wintypes
+
+    from claude_hands.uia.core import UiaWorker
+
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    user32.CreateWindowExW.restype = wintypes.HWND
+    user32.CreateWindowExW.argtypes = [
+        wintypes.DWORD, wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.DWORD,
+        ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+        wintypes.HWND, wintypes.HMENU, wintypes.HINSTANCE, wintypes.LPVOID,
+    ]
+    user32.SendMessageTimeoutW.argtypes = [
+        wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM,
+        wintypes.UINT, wintypes.UINT, ctypes.POINTER(ctypes.c_size_t),
+    ]
+    user32.DestroyWindow.argtypes = [wintypes.HWND]
+
+    worker = UiaWorker(name="test-sta", apartment="sta")
+    try:
+        hwnd = worker.call(lambda: user32.CreateWindowExW(
+            0, "STATIC", "probe", 0, 0, 0, 10, 10, None, None, None, None))
+        assert hwnd
+        answered = ctypes.c_size_t(0)
+        ok = user32.SendMessageTimeoutW(hwnd, 0x000E, 0, 0, 0x0002, 2000, ctypes.byref(answered))
+        assert ok, "the idle worker's window did not answer WM_GETTEXTLENGTH"
+        assert answered.value == len("probe")
+        worker.call(lambda: user32.DestroyWindow(hwnd))
+    finally:
+        worker.close()

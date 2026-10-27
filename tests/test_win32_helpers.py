@@ -33,3 +33,23 @@ def test_modifier_flags():
     assert modifier_mk_flags(()) == 0
     assert modifier_mk_flags(("ctrl",)) == 0x0008
     assert modifier_mk_flags(("ctrl", "shift")) == 0x000C
+
+
+def test_a_title_is_read_without_sending_the_window_a_message(monkeypatch):
+    # GetWindowText sends WM_GETTEXT to this process's own windows, and the web
+    # engine's worker owns some: list_windows hung for good on one of them.
+    from claude_hands.win32 import windows
+
+    class User32:
+        def GetWindowTextLengthW(self, hwnd):
+            raise AssertionError("sends WM_GETTEXTLENGTH to this process's windows")
+
+        def GetWindowTextW(self, hwnd, buf, size):
+            raise AssertionError("sends WM_GETTEXT to this process's windows")
+
+        def InternalGetWindowText(self, hwnd, buf, size):
+            buf.value = "웹 페이지 메시지"
+            return len(buf.value)
+
+    monkeypatch.setattr("claude_hands.win32.defs.user32", User32())
+    assert windows._window_text(5) == "웹 페이지 메시지"

@@ -22,6 +22,7 @@ EXPECTED_TOOLS = {
     "menu_select",
     "wait_for_element",
     "control_window",
+    "call_control_method",
 }
 
 
@@ -93,3 +94,24 @@ def test_the_instructions_say_so_while_read_only(monkeypatch):
     # the server can. Without it a caller retries instead of saying so.
     assert "바꿀 수 있습니다" in notice
     assert "거절" in notice
+
+
+def test_control_call_tool_takes_a_method_and_plain_arguments():
+    tool = registered_tools()["call_control_method"]
+    properties = tool.parameters["properties"]
+    assert {"method", "args", "ref", "overwrite", "timeout", "max_chars", "hwnd"} == set(properties)
+    assert tool.parameters.get("required") == ["method"]
+
+
+def test_a_long_answer_is_cut_and_says_so():
+    shown = server._format_value("가" * 50, 10)
+    assert "전체 50자 중 앞 10자" in shown and shown.endswith("가" * 10)
+
+
+def test_a_field_list_is_shown_split_not_as_control_characters():
+    shown = server._format_value("제목본문", 100)
+    assert "" not in shown and "제목 | 본문" in shown
+
+
+def test_the_instructions_say_who_presses_send():
+    assert "결재올림" in server.mcp.instructions

@@ -44,6 +44,7 @@ from typing import Any, Callable, Optional
 from ..elements import NodeInfo
 from ..win32.defs import ClaudeHandsError, require_windows
 from ..win32.windows import Rect
+from .activex import control_for, normalise_clsid
 
 IE_SERVER_CLASS = "Internet Explorer_Server"
 SMTO_ABORTIFHUNG = 0x0002
@@ -293,13 +294,17 @@ FIRE_CHANGE = (
 
 
 def _wait_for(check: Callable[[], bool], timeout: float = 2.0) -> bool:
+    from ..uia.core import wait_pumping
+
     deadline = time.monotonic() + timeout
     while True:
         if check():
             return True
         if time.monotonic() >= deadline:
             return False
-        time.sleep(0.05)
+        # This runs on the STA worker, whose windows must keep answering
+        # while it waits (see UiaWorker._next).
+        wait_pumping(None, 50)
 
 
 class _InvokePattern:
@@ -406,6 +411,51 @@ class _OptionPattern:
     @property
     def CurrentIsSelected(self) -> bool:
         return _ValuePattern(self._select, "select").CurrentValue == self._text
+
+
+class _ControlPattern:
+    """An ActiveX control in the page, called the way the page's own script calls it.
+
+    The call is handed to the page with ``setTimeout`` rather than made over
+    COM from here, for the reason clicks are (lesson 28): a control method that
+    raises a dialog — a 한글 message box, a file-exists prompt — does not return
+    until a person answers it, and a caller blocked on it would be stuck with
+    it. Handed to the page, the call returns or the wait runs out, and either
+    way the caller hears which.
+    """
+
+    _counter = 0
+
+    def __init__(self, locator: _Locator, control):
+        self._locator = locator
+        self.control = control
+
+    def Call(self, name: str, spec, args: list, timeout: float = 30.0):
+        from .activex import call_script, decode
+
+        document, _element = self._locator.element()
+        _ControlPattern._counter += 1
+        slot = f"claudeHandsCall{_ControlPattern._counter}"
+        window = document.parentWindow
+        window.execScript(f"document.{slot} = null;", "JScript")
+        schedule_script(document, call_script(self._locator.script_ref(), name, spec, args, slot))
+        answer: list[str] = []
+
+        def done() -> bool:
+            value = getattr(document, slot)
+            if value is None:
+                return False
+            answer.append(str(value))
+            return True
+
+        if not _wait_for(done, timeout):
+            raise ClaudeHandsError(
+                f"{self.control.label}의 {name} 가 {timeout:g}초 안에 끝나지 않았습니다. "
+                "컨트롤이 대화상자를 띄우고 사람의 답을 기다리는 중일 수 있습니다 — "
+                "list_windows 로 확인하세요. 호출은 취소되지 않았으니 나중에 끝날 수 있습니다."
+            )
+        window.execScript(f"document.{slot} = null;", "JScript")
+        return decode(answer[0])
 
 
 class _DocumentRange:
@@ -604,6 +654,13 @@ def _walk_document(
             value = ""
         elif role in {"button", "hyperlink"}:
             patterns["invoke"] = _InvokePattern(locator)
+        elif role == "activex":
+            control = control_for(value)
+            if control is not None:
+                patterns["control"] = _ControlPattern(locator, control)
+                help_text = f"{control.label} — call_control_method 로 메서드를 부를 수 있습니다"
+            else:
+                help_text = f"ActiveX {value} — 허용 목록이 없어 메서드를 부를 수 없습니다"
 
         element = WebElement(
             role=ROLE_LABELS.get(role, role if role != "frame" else "pane"),
@@ -627,7 +684,7 @@ def _walk_document(
 
         if role == "frame":
             _walk_frame(document, index, node, server_hwnd, frames, origin, element_index, budget, rect_text)
-        elif role == "activex" and value.replace("clsid:", "").strip("{}") in HWP_CONTROL_CLSIDS:
+        elif role == "activex" and normalise_clsid(value) in HWP_CONTROL_CLSIDS:
             _walk_hwp_control(document, index, node, element_index, budget)
 
 
@@ -673,7 +730,10 @@ def _walk_hwp_control(document, index, node, element_index, budget) -> None:
     from ..office.hwp import HwpAdapter
 
     control = document.all.item(index)
-    node.help_text = "한글 컨트롤 — 본문과 누름틀을 읽고 쓸 수 있습니다"
+    node.help_text = (
+        "한글 컨트롤 — 본문과 누름틀을 읽고 쓸 수 있고, call_control_method 로 "
+        "메서드(GetTextFile·PutFieldText·SaveAs 등)를 부를 수 있습니다"
+    )
 
     class _Budget:
         def spent(self) -> bool:

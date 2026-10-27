@@ -83,6 +83,7 @@ class NodeInfo:
             "selectionitem",
             "expandcollapse",
             "rangevalue",
+            "control",
         }:
             return True
         if "value" in self.patterns and self.role in {"edit", "combobox", "document", "spinner"}:

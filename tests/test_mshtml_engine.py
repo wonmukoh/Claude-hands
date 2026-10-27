@@ -281,3 +281,92 @@ def test_the_page_script_stays_within_what_ie5_mode_understands():
     source = Path(core.__file__).with_name("collect.js").read_text(encoding="utf-8")
     for modern in ("JSON.", ".forEach(", ".trim(", "=>", "let ", "const ", "querySelector"):
         assert modern not in source, modern
+
+
+# --------------------------------------------------------------------------
+# Calling a control's methods
+# --------------------------------------------------------------------------
+
+
+def control_page(page, answer=None):
+    """A page whose next turn runs the scheduled call and leaves ``answer``."""
+
+    import re
+
+    control = FakeNode("OBJECT", "editor1")
+    doc = page({40: control})
+
+    def exec_script(source, language):
+        match = re.match(r"document\.(\w+) = null;", source)
+        setattr(doc, match.group(1), None)
+
+    def run_page_turn(source, delay):
+        doc.parentWindow.scheduled.append(source)
+        if answer is not None:
+            slot = re.search(r"document\.(claudeHandsCall\d+) = t", source).group(1)
+            setattr(doc, slot, answer)
+
+    doc.parentWindow.execScript = exec_script
+    doc.parentWindow.setTimeout = run_page_turn
+    return doc
+
+
+def hwp_pattern():
+    from claude_hands.mshtml.activex import HWP_CONTROL
+
+    return core._ControlPattern(_Locator(1, (1,), 40, "OBJECT", "editor1", ""), HWP_CONTROL)
+
+
+def test_a_control_call_is_run_by_the_page_and_its_answer_read_back(page, monkeypatch):
+    from claude_hands.mshtml.activex import HWP_CONTROL
+
+    doc = control_page(page, answer="string\x1f본문입니다")
+    monkeypatch.setattr(_Locator, "document", lambda self: doc)
+
+    value = hwp_pattern().Call("GetTextFile", HWP_CONTROL.methods["GetTextFile"], ["UNICODE", ""])
+
+    assert value == "본문입니다"
+    [script] = doc.parentWindow.scheduled
+    assert "c = document.all[40]" in script
+    assert 'c.GetTextFile("UNICODE", "")' in script
+
+
+def test_a_control_that_does_not_answer_is_reported_not_waited_on_forever(page, monkeypatch):
+    # A 한글 message box waits for a person. The caller hears so instead of
+    # hanging with it — the lesson the modal 확인 link taught (lesson 28).
+    from claude_hands.mshtml.activex import HWP_CONTROL
+
+    doc = control_page(page, answer=None)
+    monkeypatch.setattr(_Locator, "document", lambda self: doc)
+    monkeypatch.setattr(core, "_wait_for", lambda check, timeout=2.0: check())
+
+    with pytest.raises(ClaudeHandsError, match="대화상자"):
+        hwp_pattern().Call("SaveAs", HWP_CONTROL.methods["SaveAs"], [r"C:\a.hwp", "HWP", ""], 1)
+
+
+def test_the_control_refusing_a_call_is_an_error(page, monkeypatch):
+    from claude_hands.mshtml.activex import HWP_CONTROL, ControlCallError
+
+    doc = control_page(page, answer="error\x1f알 수 없는 형식")
+    monkeypatch.setattr(_Locator, "document", lambda self: doc)
+
+    with pytest.raises(ControlCallError, match="알 수 없는 형식"):
+        hwp_pattern().Call("GetTextFile", HWP_CONTROL.methods["GetTextFile"], ["XYZ", ""])
+
+
+def test_known_controls_get_a_call_pattern_and_unknown_ones_say_why_not(monkeypatch):
+    raw = RS.join([
+        US.join(["기안", "5", "1", "0"]),
+        record(40, -1, "activex", "OBJECT", "", "attach", "", "attach",
+               "clsid:205d1f4f-db85-4393-ac6d-d3ff2434e37e"),
+        record(41, -1, "activex", "OBJECT", "", "other", "", "other",
+               "clsid:11111111-2222-3333-4444-555555555555"),
+    ])
+
+    root = walk(monkeypatch, raw)
+
+    attach, other = root.children
+    assert "control" in attach.patterns and attach.is_actionable
+    assert "call_control_method" in attach.help_text
+    assert "control" not in other.patterns
+    assert "허용 목록이 없어" in other.help_text
