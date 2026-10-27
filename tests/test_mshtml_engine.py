@@ -275,12 +275,54 @@ def test_the_page_script_ships_with_the_package():
     assert "mshtml/*.js" in pyproject.read_text(encoding="utf-8")
 
 
-def test_the_page_script_stays_within_what_ie5_mode_understands():
+@pytest.mark.parametrize("which", ["collect.js", "page text"])
+def test_the_page_scripts_stay_within_what_ie5_mode_understands(which):
     # An MFC host gets IE5 quirks mode unless the page asks otherwise, and
     # K-에듀파인's pages are of that age.
-    source = Path(core.__file__).with_name("collect.js").read_text(encoding="utf-8")
+    if which == "collect.js":
+        source = Path(core.__file__).with_name("collect.js").read_text(encoding="utf-8")
+    else:
+        source = core.PAGE_TEXT_JS
     for modern in ("JSON.", ".forEach(", ".trim(", "=>", "let ", "const ", "querySelector"):
         assert modern not in source, modern
+
+
+def test_a_hidden_input_shown_by_its_label_is_still_listed():
+    # K-에듀파인's 기안 side panel shrinks every radio and checkbox to nothing
+    # and draws a <label for> instead; judged by the input's size alone, none
+    # of them existed.
+    source = Path(core.__file__).with_name("collect.js").read_text(encoding="utf-8")
+    assert "standIn(el)" in source and "rectOf(box || el)" in source
+
+
+def test_page_text_leaves_out_scripts_and_hidden_parts():
+    for skipped in ("SCRIPT:1", "STYLE:1", "display === 'none'"):
+        assert skipped in core.PAGE_TEXT_JS
+
+
+def test_page_text_is_one_line_per_block_with_cells_kept_apart():
+    raw = "\n  제목  \n\n\t구분\t 일반 \t\n\n본문   입니다\n"
+    assert core._tidy_text(raw) == "제목\n구분\t일반\n본문 입니다"
+
+
+def test_page_text_reads_each_frame_with_the_same_script(monkeypatch):
+    class Frames:
+        length = 1
+
+        def item(self, index):
+            return type("Frame", (), {"document": "inner"})()
+
+    outer = type("Doc", (), {"frames": Frames()})()
+    seen = []
+
+    def fake_run(document, source):
+        seen.append((document, source is core.PAGE_TEXT_JS))
+        return "바깥" if document is outer else "안쪽"
+
+    monkeypatch.setattr(core, "run_script", fake_run)
+
+    assert core._page_text(lambda: outer)() == "바깥\n안쪽"
+    assert seen == [(outer, True), ("inner", True)]
 
 
 # --------------------------------------------------------------------------

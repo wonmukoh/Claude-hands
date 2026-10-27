@@ -79,6 +79,19 @@
         return '';
     }
 
+    // A styled checkbox: the real <input> is shrunk to nothing and a
+    // <label for=id> drawn as a picture takes the clicks. K-에듀파인's 기안
+    // window does this for every radio and checkbox in its side panel, and
+    // judged by the input's own size they all looked invisible.
+    function standIn(el) {
+        if (!el.id) return null;
+        var labels = document.getElementsByTagName('label');
+        for (var i = 0; i < labels.length; i++) {
+            if (labels[i].htmlFor === el.id && shown(labels[i])) return labels[i];
+        }
+        return null;
+    }
+
     function rectOf(el) {
         try {
             var r = el.getBoundingClientRect();
@@ -87,13 +100,15 @@
         } catch (e) { return ''; }
     }
 
-    function emit(index, parent, role, el, name, value, state) {
+    // `box` is what is on screen in the element's place, when that is not the
+    // element itself.
+    function emit(index, parent, role, el, name, value, state, box) {
         if (count >= maxNodes) return;
         count++;
         var disabled = el.disabled ? '1' : '0';
         var readonly = el.readOnly ? '1' : '0';
         out.push([index, parent, role, el.tagName, lower(el.type), clean(el.id), clean(el.name),
-                  clean(name), clean(value), state, disabled, readonly, rectOf(el)].join(US));
+                  clean(name), clean(value), state, disabled, readonly, rectOf(box || el)].join(US));
     }
 
     var TEXT_TAGS = {H1:1, H2:1, H3:1, H4:1, H5:1, H6:1, P:1, TD:1, TH:1, LI:1, SPAN:1, DIV:1,
@@ -109,7 +124,11 @@
             emit(i, -1, 'frame', el, el.name || el.id || el.src, '', '');
             continue;
         }
-        if (!shown(el)) continue;
+        var box = null;
+        if (!shown(el)) {
+            if (tag === 'INPUT' && (type === 'checkbox' || type === 'radio')) box = standIn(el);
+            if (!box) continue;
+        }
         if (tag === 'INPUT') {
             if (type === 'hidden') continue;
             if (type === 'checkbox') role = 'checkbox';
@@ -119,7 +138,7 @@
             else role = 'edit';
             if (role === 'button') emit(i, -1, role, el, el.value || el.alt || el.title || el.id, '', '');
             else if (role === 'edit') emit(i, -1, role, el, labelOf(el), type === 'password' ? '' : el.value, type === 'password' ? 'secret' : '');
-            else emit(i, -1, role, el, labelOf(el), '', el.checked ? 'on' : 'off');
+            else emit(i, -1, role, el, labelOf(el) || (box && clean(box.title)), '', el.checked ? 'on' : 'off', box);
         } else if (tag === 'TEXTAREA') {
             emit(i, -1, 'edit', el, labelOf(el), el.value, '');
         } else if (tag === 'SELECT') {

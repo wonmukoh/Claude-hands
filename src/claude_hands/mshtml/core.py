@@ -588,14 +588,63 @@ def _rect(text: str, origin: Optional[tuple[int, int]]) -> Optional[Rect]:
 ROLE_LABELS = {"activex": "custom"}
 
 
+# The page's words as a reader sees them. ``body.innerText`` is not that:
+# measured on K-에듀파인's dialogs, it put the text of inline <script> blocks —
+# ``window['__sId__']=…`` and jQuery — ahead of the page's own words. IE5
+# syntax, like collect.js.
+PAGE_TEXT_JS = r"""(function () {
+    var out = [];
+    var SKIP = {SCRIPT:1, STYLE:1, NOSCRIPT:1, TITLE:1, HEAD:1, OBJECT:1, EMBED:1,
+                IFRAME:1, FRAME:1, TEXTAREA:1, SELECT:1, OPTION:1};
+    var BLOCK = {P:1, DIV:1, TR:1, LI:1, UL:1, OL:1, DL:1, DT:1, DD:1, TABLE:1, FORM:1,
+                 H1:1, H2:1, H3:1, H4:1, H5:1, H6:1, CENTER:1, PRE:1, BLOCKQUOTE:1,
+                 FIELDSET:1, LEGEND:1, CAPTION:1, ADDRESS:1, HR:1};
+    function hidden(n) {
+        try {
+            var s = n.currentStyle;
+            return s && (s.display === 'none' || s.visibility === 'hidden');
+        } catch (e) { return false; }
+    }
+    function walk(n) {
+        for (var c = n.firstChild; c; c = c.nextSibling) {
+            if (c.nodeType === 3) {
+                out.push(String(c.nodeValue).replace(/[\s ]+/g, ' '));
+            } else if (c.nodeType === 1) {
+                var t = c.tagName;
+                if (SKIP[t] || hidden(c)) continue;
+                if (t === 'BR') { out.push('\n'); continue; }
+                if (BLOCK[t]) out.push('\n');
+                walk(c);
+                if (t === 'TD' || t === 'TH') out.push('\t');
+                else if (BLOCK[t]) out.push('\n');
+            }
+        }
+    }
+    if (document.body) walk(document.body);
+    return out.join('');
+})()"""
+
+
+def _tidy_text(raw: str) -> str:
+    """One line per block, table cells separated by tabs, no blank lines."""
+
+    lines = []
+    for line in raw.split("\n"):
+        cells = [" ".join(cell.split()) for cell in line.split("\t")]
+        line = "\t".join(cell for cell in cells if cell)
+        if line:
+            lines.append(line)
+    return "\n".join(lines)
+
+
 def _page_text(locator_document: Callable[[], Any]) -> Callable[[], str]:
     def read() -> str:
         document = locator_document()
-        parts = [str(document.body.innerText or "")]
+        parts = [_tidy_text(run_script(document, PAGE_TEXT_JS))]
         frames = document.frames
         for index in range(int(frames.length)):
             try:
-                parts.append(str(frames.item(index).document.body.innerText or ""))
+                parts.append(_tidy_text(run_script(frames.item(index).document, PAGE_TEXT_JS)))
             except Exception:  # noqa: BLE001 - another origin keeps its text
                 continue
         return "\n".join(part for part in parts if part.strip())

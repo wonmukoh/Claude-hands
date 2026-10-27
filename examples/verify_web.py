@@ -87,6 +87,13 @@ def main() -> int:
     report.step("라디오 고르기", lambda: expect(
         actions.toggle(session, ref("PDF", "radiobutton"), to=True),
         lambda: session.refs[ref("PDF", "radiobutton")].toggle_state))
+    # K-에듀파인's 기안 window hides the real input and shows a <label for>.
+    report.step("숨긴 체크칸(라벨로 보임)", lambda: expect(
+        actions.toggle(session, ref("긴급", "checkbox"), to=True),
+        lambda: session.refs[ref("긴급", "checkbox")].toggle_state))
+    report.step("숨긴 라디오(라벨로 보임)", lambda: expect(
+        actions.toggle(session, ref("비공개", "radiobutton"), to=True),
+        lambda: session.refs[ref("비공개", "radiobutton")].toggle_state))
     report.step("입력", lambda: actions.type_text(session, ref("메모", "edit"), "검증 메모").describe())
     report.step("목록", lambda: actions.type_text(session, ref("구분", "combobox"), "비공개").describe())
     report.step("iframe 안 입력", lambda: actions.type_text(session, ref("안쪽", "edit"), "안쪽 검증").describe())
@@ -117,9 +124,11 @@ def main() -> int:
     def page_log():
         time.sleep(0.3)
         text = actions.get_text(session)
-        for word in ("첨부 클릭", "메모 바뀜", "구분 바뀜", "확인 눌림"):
+        for hidden in ("스크립트글자", "숨긴글자"):
+            assert hidden not in text, f"읽은 글에 '{hidden}' 가 섞였습니다"
+        for word in ("첨부 클릭", "긴급 클릭", "비공개 클릭", "메모 바뀜", "구분 바뀜", "확인 눌림"):
             assert word in text, f"페이지 처리기가 '{word}' 를 남기지 않았습니다"
-        return "페이지의 onclick·onchange 처리기가 모두 돌았음"
+        return "처리기가 모두 돌았고, 스크립트·숨긴 글은 읽은 글에 없음"
 
     report.step("페이지 처리기 실행", page_log)
 

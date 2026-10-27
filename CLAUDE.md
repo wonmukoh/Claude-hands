@@ -95,7 +95,7 @@ src/claude_hands/
 ## 검증하는 법
 
 ```bash
-pytest -q                                    # 312개
+pytest -q                                    # 317개
 
 # 남의 파일에 쓰지 않기 위한 전용 대상 창 (입력란·체크박스·대화상자 버튼)
 python examples/target_app.py
@@ -607,6 +607,18 @@ UIA 의 Win32 버튼 프록시가 누를 때 창을 활성화하는 것으로 �
 누르면 좌표 클릭이 링크에 떨어지기 때문입니다. click·press_keys(ref)·focus·menu_select
 모두 막습니다. 서버를 띄우는 사람만 `CLAUDE_HANDS_ALLOW_SEND=1` 로 풉니다.
 
+### 35. 크기 0 인 입력칸도 라벨이 보이면 있는 것입니다
+
+K-에듀파인 기안 창 오른쪽 칸(긴급·공개 여부·열람 제한 등)은 진짜 `<input>` 을
+크기 0 으로 숨기고 `<label for=id>` 그림을 대신 보여 줍니다. `collect.js` 가 크기로
+보임을 판정해서 **전부 상태 없는 글자**로만 나왔습니다(그 세션 실측). 이제 체크칸·
+라디오가 안 보이면 보이는 `label[for]` 를 찾아 그 위치로 내놓고, 누르는 것은 여전히
+input 의 `click()` 이라 `onclick` 이 돕니다. `…View` 로 끝나는 짝은 disabled 로 나옵니다.
+
+같은 세션이 `read_text` 가 `<script>` 안 글자를 본문보다 먼저 돌려준다고 알렸습니다 —
+`body.innerText` 가 인라인 스크립트를 포함했습니다. 이제 페이지 안에서 DOM 을 걸으며
+script·style·숨긴 요소를 빼고 모읍니다(`PAGE_TEXT_JS`).
+
 ## 지금까지 검증된 것
 
 Wine 위 Windows CPython 으로 실행 중인 Win32 프로그램(메모장·winecfg) 상대,
@@ -652,7 +664,7 @@ UIA 초기화 성공, DPI per-monitor-v2, UI 트리 **203개** 요소(보임 0.3
 
 ### `mshtml` 엔진 실기검증 — **9/9 통과** (보임·최소화 각각)
 
-`examples/web_target.py`(ATL 로 IE 컨트롤을 띄운 시험 창) 상대로 체크칸 끄기,
+`examples/web_target.py`(ATL 로 IE 컨트롤을 띄운 시험 창) 상대로 체크칸 끄기, 라벨로만 보이는 숨긴 체크칸·라디오,
 라디오 고르기(`onclick` 실행 확인), 입력란·목록 입력(`onchange` 실행 확인), 같은
 출처 iframe 안 입력, 알림창을 띄우는 링크(43~70ms 에 돌아옴), 알림창 닫기
 (`message:BM_CLICK`). 커서 이동 0, 전경 변화 0 — 첫 실행의 1건은 교훈 31.
