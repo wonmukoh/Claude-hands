@@ -132,16 +132,44 @@ def dominant_ie_server(hwnd: int, share: float = 0.5) -> Optional[int]:
     elif not user32.GetClientRect(wintypes.HWND(hwnd), ctypes.byref(outer)):
         return None
     area = max(1, (outer.right - outer.left) * (outer.bottom - outer.top))
+    minimised = bool(user32.IsIconic(wintypes.HWND(hwnd)))
     best, best_area = None, 0
     for server in ie_servers(hwnd):
         inner = wintypes.RECT()
         user32.GetClientRect(wintypes.HWND(server), ctypes.byref(inner))
         size = (inner.right - inner.left) * (inner.bottom - inner.top)
+        if not size and minimised:
+            # Some hosts shrink the control to nothing while minimised —
+            # measured: WXSClient's IE server reported 0x0, so auto fell back
+            # to UIA and saw only the title bar. The page keeps its own size.
+            size = _page_area(server)
         if size > best_area:
             best, best_area = server, size
     if best is not None and best_area / area >= share:
         return best
     return None
+
+
+def _page_area(server_hwnd: int) -> int:
+    """The page's own viewport in pixels, asked of the page; 0 if it will not say."""
+
+    from ..uia.core import get_sta_worker
+
+    def measure() -> int:
+        document = document_of(server_hwnd)
+        answer = run_script(
+            document,
+            "(function () { var b = document.body, e = document.documentElement; "
+            "return Math.max(b ? b.clientWidth : 0, e ? e.clientWidth : 0) + ',' + "
+            "Math.max(b ? b.clientHeight : 0, e ? e.clientHeight : 0); })()",
+        )
+        width, height = (int(part) for part in answer.split(","))
+        return width * height
+
+    try:
+        return int(get_sta_worker().call(measure, timeout=10))
+    except Exception:  # noqa: BLE001 - a page that will not answer is not dominant
+        return 0
 
 
 def _dispatch_modules():

@@ -429,3 +429,48 @@ def test_text_says_whether_a_click_on_it_would_press_something(monkeypatch):
     caption, cell = (elements[id(node)] for node in root.children)
     assert caption.inside_pressable is True
     assert cell.inside_pressable is False
+
+
+class MinimisedHost:
+    """user32 as WXSClient answers while minimised: a 1920x1040 restored frame
+    whose IE control has been shrunk to 0x0."""
+
+    def __init__(self, control_size=(0, 0)):
+        self.control_size = control_size
+
+    def IsIconic(self, hwnd):
+        return 1
+
+    def GetWindowPlacement(self, hwnd, placement):
+        rect = placement._obj.rcNormalPosition
+        rect.left, rect.top, rect.right, rect.bottom = 0, 0, 1920, 1040
+        return 1
+
+    def GetClientRect(self, hwnd, rect):
+        rect._obj.right, rect._obj.bottom = self.control_size
+        return 1
+
+
+def test_a_minimised_host_that_shrank_its_page_is_measured_by_the_page(monkeypatch):
+    monkeypatch.setattr(core, "_user32", lambda: MinimisedHost())
+    monkeypatch.setattr(core, "ie_servers", lambda hwnd: [7])
+    monkeypatch.setattr(core, "_page_area", lambda server: 1904 * 992)
+
+    assert core.dominant_ie_server(1) == 7
+
+
+def test_a_small_page_in_a_minimised_window_is_still_not_the_window(monkeypatch):
+    # A help pane stays a help pane: auto must not switch engines for it.
+    monkeypatch.setattr(core, "_user32", lambda: MinimisedHost())
+    monkeypatch.setattr(core, "ie_servers", lambda hwnd: [7])
+    monkeypatch.setattr(core, "_page_area", lambda server: 300 * 200)
+
+    assert core.dominant_ie_server(1) is None
+
+
+def test_the_page_is_only_asked_when_the_control_has_no_size(monkeypatch):
+    monkeypatch.setattr(core, "_user32", lambda: MinimisedHost(control_size=(1904, 1001)))
+    monkeypatch.setattr(core, "ie_servers", lambda hwnd: [7])
+    monkeypatch.setattr(core, "_page_area", lambda server: pytest.fail("asked the page needlessly"))
+
+    assert core.dominant_ie_server(1) == 7
