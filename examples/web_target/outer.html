@@ -1,0 +1,20 @@
+<html><head><meta http-equiv="Content-Type" content="text/html; charset=utf-8"><title>파일저장</title>
+<script>
+var log = [];
+function note(s) { log.push(s); document.getElementById('log').innerText = log.join(' / '); }
+function save() { alert('저장 위치를 고르세요'); note('확인 눌림'); }
+</script></head><body>
+<h3>파일저장</h3>
+<table>
+<tr><td><input type="checkbox" id="hwpsave" checked onclick="note('본문 클릭')"> 본문</td>
+    <td><input type="checkbox" id="attsave" checked onclick="note('첨부 클릭')"> 첨부파일</td></tr>
+<tr><td><input type="radio" name="HWPDISTSAVE" id="HWPDISTSAVE01" checked> ODT</td>
+    <td><input type="radio" name="HWPDISTSAVE" id="HWPDISTSAVE02"> PDF</td></tr>
+<tr><td><label for="memo">메모</label></td><td><input type="text" id="memo" onchange="note('메모 바뀜')"></td></tr>
+<tr><td>구분</td><td><select id="kind" onchange="note('구분 바뀜')"><option value="a">일반</option><option value="b">비공개</option></select></td></tr>
+</table>
+<a href="#" onclick="note('취소 눌림'); return false;">취소</a>
+<a href="#" onclick="save(); return false;">확인</a>
+<div id="log"></div>
+<iframe id="frame1" src="inner.html" width="600" height="200"></iframe>
+</body></html>

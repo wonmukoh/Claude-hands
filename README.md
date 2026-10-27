@@ -37,15 +37,17 @@ Windows UI Automation 으로 "저 버튼의 Invoke 를 실행해라" 라고 애�
 | 2 | **창 메시지** — 해당 컨트롤 HWND 에 `PostMessage` | 불필요 | 대체로 동작 | 우클릭·더블클릭·휠 |
 | 3 | **포커스 입력** — 포커스 후 `WM_CHAR` | 필요 | 창이 잠깐 뜰 수 있음 | 명시적으로 허용할 때만 |
 
-### 엔진 세 가지
+### 엔진 네 가지
 
 | 엔진 | 보는 것 | COM 필요 | 쓰는 때 |
 |---|---|---|---|
 | `office` | 열린 문서의 개체 모델 (슬라이드·문단·셀·누름틀) | 필요 | PowerPoint · Word · Excel · 한글 |
+| `mshtml` | IE 웹 컨트롤 안 페이지의 DOM (입력란·체크칸·목록·iframe) | 필요 | K-에듀파인 WXSClient 처럼 창이 웹 화면인 프로그램 |
 | `uia` | UI Automation 트리 (그려진 모든 요소) | 필요 | 기본 |
 | `win32` | 실제 창 핸들을 가진 컨트롤만 | 불필요 | UIA 를 못 쓸 때 |
 
-기본값 `auto` 는 대상이 Office 프로그램이면 `office` 를, 아니면 `uia` 를 쓰고,
+기본값 `auto` 는 대상이 Office 프로그램이면 `office` 를, 창 대부분이 IE 웹
+컨트롤이면 `mshtml` 을, 아니면 `uia` 를 쓰고,
 UIA 자체가 뜨지 않는 환경(잠긴 PC, 타입 라이브러리 로드 실패)에서만 `win32` 로
 내려갑니다. 어떤 엔진이 실제로 처리했는지는 모든 결과에 표시됩니다
 (`win32:invoke`, `office:value.SetValue` 처럼).
@@ -62,6 +64,12 @@ app.minimize()
 box = app.find("TextBox 4", role="edit")[0]
 app.type(box.ref, "최소화 상태에서 쓴 문장")   # office:value.SetValue
 ```
+
+`mshtml` 엔진은 IE 웹 컨트롤이 내주는 문서 객체(`WM_HTML_GETOBJECT`)에 붙습니다.
+UIA 로는 옛 방식 페이지의 체크칸이 상태 없는 글자로 나오기 때문입니다. 클릭은
+페이지 안에서 예약해 바로 돌아오므로, 눌린 처리기가 모달 창을 띄워도 도구가
+멈추지 않습니다. 페이지는 GPU 로 그려져 창 캡처에 비어 보이니 `snapshot` 과
+`read_text` 로 읽으세요.
 
 `win32` 엔진은 소유자 그리기 방식의 최신 앱 내부는 보지 못하지만, 고전 Win32
 프로그램에는 충분하고 COM 을 전혀 건드리지 않습니다.
@@ -351,7 +359,9 @@ src/claude_hands/
   win32/input.py     PostMessage 마우스/키 · 키 문자열 파서
   win32/controls.py  창 메시지 폴백 엔진 (HWND 컨트롤 → 같은 패턴 프로토콜)
   win32/menus.py     실제 메뉴바 읽기 · WM_COMMAND 실행
-  uia/core.py        COM(MTA) 워커 · 요소 래퍼 · 캐시 트리 구축
+  uia/core.py        COM(MTA) 워커 · STA 워커 · 요소 래퍼 · 캐시 트리 구축
+  office/            Office·한글 문서 모델 엔진
+  mshtml/            IE 웹 컨트롤 페이지의 DOM 엔진
   elements.py        트리 모델 · 가지치기 · 렌더링 · 검색   (플랫폼 무관)
   session.py         창 세션 · ref 레지스트리 · 자동 재연결
   actions.py         클릭/입력/스크롤 … 3단 전략 체인

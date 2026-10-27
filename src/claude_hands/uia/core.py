@@ -41,6 +41,7 @@ class UiaUnavailableError(ClaudeHandsError):
 
 RPC_E_CHANGED_MODE = -2147417850
 COINIT_MULTITHREADED = 0
+COINIT_APARTMENTTHREADED = 2
 
 
 def prefer_mta() -> bool:
@@ -88,7 +89,8 @@ def init_thread_com(comtypes_module: Any) -> str:
 class UiaWorker:
     """Runs every UIA call on one dedicated MTA thread."""
 
-    def __init__(self, name: str = "claude-hands-uia") -> None:
+    def __init__(self, name: str = "claude-hands-uia", apartment: str = "mta") -> None:
+        self._wanted = apartment
         self._queue: "queue.Queue[tuple[Callable[..., Any], tuple, dict, Future]]" = queue.Queue()
         self._thread = threading.Thread(target=self._run, name=name, daemon=True)
         self._started = threading.Event()
@@ -102,10 +104,19 @@ class UiaWorker:
 
     def _run(self) -> None:  # pragma: no cover - Windows only
         try:
-            prefer_mta()  # no-op if comtypes is already loaded
-            import comtypes
+            if self._wanted == "sta":
+                # Not through comtypes: importing it here for the first time
+                # would join this thread to the MTA (lesson 3) before the
+                # request for an STA could be made.
+                import ctypes
 
-            self.apartment = init_thread_com(comtypes)
+                ctypes.oledll.ole32.CoInitializeEx(None, COINIT_APARTMENTTHREADED)
+                self.apartment = "sta"
+            else:
+                prefer_mta()  # no-op if comtypes is already loaded
+                import comtypes
+
+                self.apartment = init_thread_com(comtypes)
         except BaseException as exc:  # noqa: BLE001 - surfaced to the constructor
             self._error = exc
             self._started.set()
@@ -122,9 +133,9 @@ class UiaWorker:
                 except BaseException as exc:  # noqa: BLE001 - relayed to caller
                     future.set_exception(exc)
         try:
-            import comtypes
+            import ctypes
 
-            comtypes.CoUninitialize()
+            ctypes.oledll.ole32.CoUninitialize()
         except Exception:  # noqa: BLE001 - shutdown best effort
             pass
 
@@ -151,6 +162,26 @@ def get_worker() -> UiaWorker:
             require_windows()
             _worker = UiaWorker()
         return _worker
+
+
+_sta_worker: Optional[UiaWorker] = None
+
+
+def get_sta_worker() -> UiaWorker:
+    """A second worker in a single-threaded apartment, for the web engine.
+
+    An IE document's window object will not cross into the multi-threaded
+    apartment — measured: `document.parentWindow` answered E_NOINTERFACE from
+    the UIA worker, and the same call from an STA thread worked. IE is an STA
+    component through and through, so its objects get a thread of that kind.
+    """
+
+    global _sta_worker
+    with _worker_lock:
+        if _sta_worker is None:
+            require_windows()
+            _sta_worker = UiaWorker(name="claude-hands-sta", apartment="sta")
+        return _sta_worker
 
 
 def shutdown() -> None:

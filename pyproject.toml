@@ -11,6 +11,9 @@ requires-python = ">=3.10"
 license = { text = "MIT" }
 dependencies = [
     "comtypes>=1.4.1 ; sys_platform == 'win32'",
+    # 한글 (Running Object Table) and IE pages (ObjectFromLresult, late-bound
+    # DOM) are reached through pywin32; comtypes offers neither.
+    "pywin32>=306 ; sys_platform == 'win32'",
     "pillow>=10.0.0",
     "mcp>=1.2.0",
 ]
@@ -24,6 +27,11 @@ claude-hands-mcp = "claude_hands.server:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+# The script the web engine runs inside a page; without this line a wheel
+# installs the engine without it and every web snapshot fails.
+claude_hands = ["mshtml/*.js"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

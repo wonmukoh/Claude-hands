@@ -113,6 +113,7 @@ async def list_windows(
     title_contains: str | None = None,
     process: str | None = None,
     include_hidden: bool = False,
+    wait_seconds: float = 0,
 ) -> str:
     """열려 있는 창 목록을 반환합니다 (최소화된 창 포함).
 
@@ -120,20 +121,29 @@ async def list_windows(
         title_contains: 제목에 이 문자열이 들어간 창만 (대소문자 무시).
         process: 실행 파일 이름 일부로 거르기 (예: "chrome.exe", "notepad").
         include_hidden: 숨김/제목 없는 창까지 포함할지 여부.
+        wait_seconds: 맞는 창이 없으면 나타날 때까지 이만큼 기다립니다(최대 60초).
+            버튼을 누른 뒤 뜨는 대화상자를 기다릴 때 씁니다.
     """
 
     if not IS_WINDOWS:
         return _fail(ClaudeHandsError("이 도구는 Windows 에서만 동작합니다."))
+    deadline = asyncio.get_running_loop().time() + max(0.0, min(float(wait_seconds), 60.0))
     try:
-        found = await _run(
-            _list_windows,
-            title_contains=title_contains,
-            process=process,
-            include_hidden=include_hidden,
-        )
+        while True:
+            found = await _run(
+                _list_windows,
+                title_contains=title_contains,
+                process=process,
+                include_hidden=include_hidden,
+            )
+            if found or asyncio.get_running_loop().time() >= deadline:
+                break
+            await asyncio.sleep(0.25)
     except ClaudeHandsError as exc:
         return _fail(exc)
     if not found:
+        if wait_seconds:
+            return f"{wait_seconds:g}초 동안 기다렸지만 조건에 맞는 창이 나타나지 않았습니다."
         return "조건에 맞는 창이 없습니다."
     lines = [f"창 {len(found)}개:"]
     lines += [f"  {info.describe()}" for info in found]
@@ -147,7 +157,7 @@ async def attach_window(
     title: str | None = None,
     process: str | None = None,
     pid: int | None = None,
-    engine: Literal["auto", "office", "uia", "win32"] = "auto",
+    engine: Literal["auto", "office", "mshtml", "uia", "win32"] = "auto",
 ) -> str:
     """조작할 창 하나에 연결합니다. 이후 모든 도구는 이 창을 대상으로 동작합니다.
 
@@ -159,9 +169,13 @@ async def attach_window(
         process: 실행 파일 이름 일부.
         pid: 프로세스 ID.
         engine: 기본 auto.
-            auto = PowerPoint·Word·Excel·한글이면 office, 아니면 uia, 그것도 안 되면 win32.
+            auto = PowerPoint·Word·Excel·한글이면 office, 창 대부분이 IE 웹 화면이면
+                mshtml, 아니면 uia, 그것도 안 되면 win32.
             office = 열린 문서의 내용(슬라이드·문단·셀·누름틀)을 직접 읽고 씁니다.
                 리본과 메뉴는 트리에 안 나옵니다.
+            mshtml = IE 웹 컨트롤(K-에듀파인 WXSClient 등) 안 페이지의 DOM. 체크칸·라디오의
+                상태, 입력란 값, 같은 출처 iframe, 페이지에 박힌 한글 컨트롤의 누름틀까지.
+                페이지 밖의 네이티브 버튼은 안 나옵니다.
             uia = 화면에 그려진 UI 트리. 리본·메뉴·대화상자가 여기 있습니다.
             win32 = 창 메시지만. COM 을 못 쓰는 환경용이고 보이는 요소가 가장 적습니다.
     """
@@ -189,10 +203,34 @@ async def attach_window(
             "슬라이드·문단·셀 내용을 직접 읽고 쓸 수 있고, 리본은 트리에 안 나옵니다. "
             "리본이나 대화상자를 다루려면 engine='uia' 로 다시 연결하세요."
         )
+    elif engine == "auto" and await _run(_is_web_window, info.hwnd):
+        lines.append(
+            "이 창은 대부분이 IE 웹 화면입니다. auto 는 mshtml 엔진으로 페이지의 DOM 을 읽습니다 — "
+            "체크칸 상태와 입력란 값이 보이고, 링크·버튼은 페이지 안에서 눌립니다. "
+            "페이지 밖의 버튼을 다뤄야 하면 engine='uia' 로 다시 연결하세요."
+        )
     elif engine != "auto":
         lines.append(f"엔진을 {engine} 로 고정했습니다.")
     lines.append("다음: snapshot() 으로 조작 가능한 요소와 ref 를 확인하세요.")
     return "\n".join(lines)
+
+
+def _is_web_window(hwnd: int) -> bool:
+    from .mshtml.core import dominant_ie_server
+
+    try:
+        return dominant_ie_server(hwnd) is not None
+    except Exception:  # noqa: BLE001 - only decides whether to add a hint
+        return False
+
+
+def _has_web_area(hwnd: int) -> bool:
+    from .mshtml.core import ie_servers
+
+    try:
+        return bool(ie_servers(hwnd))
+    except Exception:  # noqa: BLE001 - only decides whether to add a hint
+        return False
 
 
 @mcp.tool()
@@ -340,9 +378,22 @@ async def screenshot_window(
             if node.rect and node.rect_space == "screen":
                 capture = capture.crop(node.rect)
         png = await _run(capture.to_png, max_side=max_side)
+        web = await _run(_has_web_area, session.hwnd)
     except ClaudeHandsError as exc:
         return _fail(exc)
-    return Image(data=png, format="png")
+    image = Image(data=png, format="png")
+    if web:
+        # IE paints its page on the GPU, and PrintWindow does not see that
+        # surface even with PW_RENDERFULLCONTENT — measured: the page area
+        # came back blank with the window visible and with it minimised. The
+        # picture is not wrong about the frame, only silent about the page,
+        # so it is returned with that said.
+        return [
+            "이 창의 IE 웹 영역은 캡처에 비어 보입니다(IE 가 GPU 로 그려 창 캡처에 잡히지 "
+            "않습니다). 페이지 내용은 snapshot / read_text 로 읽으세요.",
+            image,
+        ]
+    return image
 
 
 # --------------------------------------------------------------------------

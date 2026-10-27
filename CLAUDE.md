@@ -61,6 +61,9 @@ src/claude_hands/
   win32/menus.py     실제 메뉴바 읽기 · WM_COMMAND 실행
   uia/core.py        COM 워커 스레드 · 요소 래퍼 · 캐시 트리 구축
   office/core.py     Office 문서 모델 엔진 (PowerPoint · Word · Excel)
+  office/hwp.py      한글 어댑터 (ROT 로 붙음 · 누름틀)
+  mshtml/core.py     IE 웹 컨트롤 안 페이지의 DOM 엔진 (K-에듀파인 WXSClient 등)
+  mshtml/collect.js  페이지 안에서 한 번에 요소를 모으는 스크립트 (IE5 문법)
   elements.py        트리 모델 · 가지치기 · 렌더링 · 검색   (플랫폼 무관)
   session.py         창 세션 · ref 레지스트리 · 자동 재연결 · 엔진 선택
   actions.py         클릭/입력/스크롤 … 전략 체인
@@ -69,33 +72,39 @@ src/claude_hands/
   cli.py             명령줄
 ```
 
-**엔진이 셋입니다.**
+**엔진이 넷입니다.**
 
 | 엔진 | 보는 것 | 문서 편집 | 쓰는 때 |
 |---|---|---|---|
 | `office` | 열린 문서의 개체 모델 | **됨** | PowerPoint · Word · Excel · 한글 |
+| `mshtml` | IE 웹 컨트롤 안 페이지의 DOM | 입력란·체크칸·목록 | 창 대부분이 `Internet Explorer_Server` 일 때 |
 | `uia` | UI Automation 트리 | 앱마다 다름 | 기본 |
 | `win32` | HWND 를 가진 컨트롤 | 편집 컨트롤만 | COM 을 못 쓸 때 |
 
-`actions.py` 의 전략 체인 하나가 셋 다 굴립니다 — 세 엔진 모두 같은 패턴
+`actions.py` 의 전략 체인 하나가 넷 다 굴립니다 — 네 엔진 모두 같은 패턴
 프로토콜(`invoke`/`value`/`toggle`)을 각자의 수단으로 구현하기 때문입니다.
 결과에는 실제로 어느 엔진이 처리했는지 표시됩니다(`win32:invoke`,
 `office:value.SetValue` 처럼).
 
 `auto` 는 대상이 Office 프로세스면 `office` 를 먼저 씁니다. 그래야 슬라이드에
-글자를 넣을 수 있습니다(교훈 10). 문서 모델을 못 쓰면 UIA 로, UIA 도 못 쓰면
+글자를 넣을 수 있습니다(교훈 10). 창 클라이언트 영역의 절반 이상이 IE 웹
+컨트롤이면 `mshtml` 을 먼저 씁니다(교훈 27). 둘 다 못 쓰면 UIA 로, UIA 도 못 쓰면
 창 메시지로 내려가고, 내려간 이유는 스냅샷 머리글에 적힙니다.
 
 ## 검증하는 법
 
 ```bash
-pytest -q                                    # 159개, 어느 OS에서나
+pytest -q                                    # 232개
 
 # 남의 파일에 쓰지 않기 위한 전용 대상 창 (입력란·체크박스·대화상자 버튼)
 python examples/target_app.py
 python examples/verify_live.py --title "claude-hands 검증 대상" --engine win32
 
 python examples/verify_live.py --process POWERPNT --engine uia --no-write
+
+# IE 웹 컨트롤 (K-에듀파인 WXSClient 와 같은 모양의 페이지)
+py examples/web_target.py
+py examples/verify_web.py
 ```
 
 **`--write` 검증은 대상 창의 실제 문서를 바꿉니다.** `--process` 는 같은 이름의
@@ -466,6 +475,111 @@ ROT 접근은 pywin32 로 합니다(`pythoncom.GetRunningObjectTable`). comtypes
 
 새 엔진을 붙일 때 좌표를 화면 픽셀로 줄 수 없다면 반드시 표시하세요.
 
+### 27. IE 웹 컨트롤 안의 페이지는 DOM 으로 읽습니다
+
+K-에듀파인의 WXSClient 는 MFC 대화상자 안에 IE WebBrowser 컨트롤
+(`Internet Explorer_Server`)이 들어 있고 모든 화면이 웹 페이지입니다. 그 세션이
+UIA 로 「파일저장」 창을 읽었더니 **체크칸·라디오가 역할도 체크 상태도 없는 글자**로
+나왔습니다. 무엇이 체크됐는지조차 알 수 없었습니다.
+
+`RegisterWindowMessage("WM_HTML_GETOBJECT")` 를 IE 창에 보내고
+`ObjectFromLresult` 로 문서 객체를 받으면 페이지의 DOM 이 그대로 나옵니다 —
+화면 낭독기가 쓰는 길이라 커서·포커스와 무관합니다.
+
+함정 셋, 전부 실측:
+
+- **MTA 에서는 안 됩니다.** UIA 워커(MTA)에서 `document.parentWindow` 가
+  `E_NOINTERFACE` 였고, STA 스레드에서는 됐습니다. 그래서 `get_sta_worker()` 가
+  따로 있고, `actions._call` 이 `mshtml` 요소를 그쪽으로 보냅니다.
+- **STA 워커에서 comtypes 를 import 하면 안 됩니다.** 그 스레드에서 처음
+  import 되면 comtypes 가 MTA 로 들어가 버리고(교훈 3), 이어지는 STA 요청이
+  `RPC_E_CHANGED_MODE` 로 죽습니다. ole32 를 ctypes 로 직접 부릅니다.
+- **pythoncom 도 같은 덫입니다.** 처음 import 하는 스레드에서 `sys.coinit_flags`
+  를 보고 아파트먼트에 들어가는데, 이 프로세스는 그 값을 MTA 로 정해 둡니다.
+  STA 워커에서 처음 import 되면 실패합니다. import 하는 동안만 값을 바꿉니다.
+
+요소를 하나씩 밖에서 읽으면 속성마다 프로세스 간 호출입니다. 그래서
+`collect.js` 를 `execScript` 로 페이지 안에서 한 번 돌려 전부 받아 옵니다
+(14개 요소 0.3초). 결과는 `document.claudeHandsOut` 으로 돌아오고 바로 지웁니다.
+**IE5 쿼크 모드 문법으로 씁니다** — MFC 호스트의 기본 문서 모드가 그것이라
+`JSON`·`forEach`·`trim` 이 없습니다. IE11 표준 모드에서도 같은 스크립트가 돕니다.
+
+old-style 페이지는 `<label>` 을 거의 안 씁니다. 체크칸은 뒤의 글자가, 입력란은
+앞 칸의 글자가 이름입니다. `labelOf` 가 그 순서로 찾습니다.
+
+ref 재식별은 `sourceIndex` 로 하되, **태그·id·name 이 다르면 거절**합니다. 위에
+요소가 끼면 인덱스가 밀리고, 그때 다른 요소를 누르면 「확인」 대신 「결재올림」이
+눌릴 수 있습니다. id 로 한 번 더 찾고, 그래도 아니면 snapshot 을 다시 찍으라고
+합니다.
+
+### 28. 페이지 안의 클릭은 페이지에게 시킵니다
+
+그 세션이 겪었습니다: 「확인」 링크를 COM 으로 `.click()` 하면 처리기가 모달 창
+(`showModalDialog`, 폴더 찾아보기)을 띄우는 동안 **호출이 돌아오지 않습니다.**
+사람이 그 창을 닫을 때까지 도구가 멈춥니다.
+
+그래서 클릭은 `parentWindow.setTimeout("document.all[i].click()", 0)` 으로
+페이지의 다음 차례에 넘기고 바로 돌아옵니다. 실측: 알림창을 띄우는 링크가
+40~70ms 에 돌아왔고 알림창은 정상으로 떴습니다. 알림창이 떠 있는 동안에도
+snapshot 은 됩니다.
+
+**속성만 바꾸면 페이지가 모릅니다.** `checked = false` 는 `onclick` 을 부르지
+않고, 「첨부파일을 끄면 무엇을 비활성」 같은 처리기가 안 돕니다. 그래서
+
+- 체크칸·라디오는 **누릅니다**(위와 같은 예약 클릭). 그리고 상태가 실제로
+  바뀔 때까지 기다립니다 — 안 바뀌면 실패로 말합니다. `toggle` 이 상태를 되읽어
+  최대 세 번 누르는데, 기다리지 않으면 같은 칸을 세 번 누릅니다.
+- 입력란·목록은 값을 넣고 `onchange` 를 예약합니다(`fireEvent`, 표준 모드에서는
+  `dispatchEvent`).
+- 켜진 라디오를 끄라는 요청은 거절합니다. 눌러서 끌 수 있는 것이 아닙니다.
+
+비밀번호 칸의 값은 읽어 오지 않습니다. 대화 기록에 남을 이유가 없습니다.
+
+페이지에 박힌 **한글 컨트롤**(`classid` BD9C32E4-…)은 `office/hwp.py` 의
+어댑터로 읽고 씁니다. 교훈 21 의 "한글 창이 여럿이면 읽기 전용" 은 여기 해당하지
+않습니다 — 컨트롤 하나가 문서 하나입니다. **이 부분은 실기검증 못 했습니다.**
+이 PC 의 한글 컨트롤은 32비트 OCX 라 64비트 시험 창에 못 올리고, WXSClient 는
+로그인한 상태에서만 뜹니다. 메서드 이름은 그 세션이 실제로 부른 것들입니다.
+
+### 29. UIA 로 Win32 버튼을 누르면 그 창이 앞으로 나옵니다
+
+**이건 새 엔진이 아니라 기존 `uia` 엔진의 계약 위반이었습니다.** 웹 엔진을
+검증하다 잡았습니다. 사용자가 Acrobat 을 쓰는 중에:
+
+| 대상 | 방식 | 전경 창 |
+|---|---|---|
+| 일반 체크칸 (`Button` 클래스) | `uia:toggle` | **대상 창으로 넘어감** |
+| 알림창의 「확인」 | `uia:invoke` | **알림창으로 넘어갔다가 비어 버림** |
+| 같은 것들 | `BM_CLICK` | 그대로 |
+
+UIA 의 Win32 버튼 프록시가 누를 때 창을 활성화하는 것으로 보입니다. 가장 흔한
+컨트롤입니다 — 모든 메시지 상자가 이걸로 만들어집니다. 그래서 UIA 요소 뒤에
+`Button` 클래스 HWND 가 있으면 `click`·`toggle` 이 `message:BM_CLICK` 을 먼저
+씁니다(`actions._win32_button`). `win32` 엔진의 실기검증(15/15)이 깨끗했던 것은
+그쪽이 처음부터 `BM_CLICK` 이었기 때문입니다.
+
+`target_app.py` 를 `uia` 엔진으로 검증한 적이 없어서 여태 몰랐습니다. 다른 Win32
+클래스(목록 상자, 트리 등)의 UIA 패턴도 같은지는 **아직 안 쟀습니다.**
+
+### 30. IE 페이지는 창 캡처에 안 찍힙니다
+
+`PW_RENDERFULLCONTENT` 를 이미 쓰고 있는데도, 창이 보일 때도 최소화일 때도
+페이지 영역이 하얗게(그쪽 PC 에서는 회색으로) 나옵니다. IE 가 페이지를 GPU 로
+그리고 `PrintWindow` 는 그 면을 못 봅니다. IE 창에 직접 `PrintWindow` 해도
+마찬가지였고, `IViewObject::Draw` 는 HDC 가 프로세스를 못 넘어가 쓸 수 없습니다.
+
+그래서 고치지 않고 **말합니다.** `screenshot_window` 는 창에 IE 영역이 있으면
+"웹 영역은 비어 보인다, snapshot/read_text 로 읽으라" 는 글을 이미지와 함께
+돌려줍니다. 비어 있는 그림을 아무 말 없이 주면 "페이지가 비었다" 로 읽힙니다.
+
+### 31. 방금 뜬 프로세스는 전경을 한 번 가져갈 수 있습니다
+
+`verify_web.py` 첫 실행에서 알림창을 닫을 때 시험 창이 전경이 됐습니다. 같은 창으로
+두 번 더(보임·최소화) 돌리자 9/9, 전경 변화 0 이었습니다. Windows 는 막 시작된
+프로세스에 전경을 가져갈 권한을 줍니다 — 알림창이 닫히며 주인 창을 활성화할 때
+그 권한이 쓰인 것으로 봅니다. 도구 탓이 아니지만 **검증 결과에서 지우지
+마세요.** WXSClient 도 사용자가 크롬에서 누르는 순간 뜨는 프로세스입니다.
+
 ## 지금까지 검증된 것
 
 Wine 위 Windows CPython 으로 실행 중인 Win32 프로그램(메모장·winecfg) 상대,
@@ -508,6 +622,14 @@ UIA 초기화 성공, DPI per-monitor-v2, UI 트리 **203개** 요소(보임 0.3
 
 읽기 5회 반복 커서 이동 0회. 쓰기 구간에 찍힌 커서 값은 연속적으로 조금씩
 흐르는 모양이라 사람의 마우스입니다 — COM 에는 커서를 움직일 수단이 없습니다.
+
+### `mshtml` 엔진 실기검증 — **9/9 통과** (보임·최소화 각각)
+
+`examples/web_target.py`(ATL 로 IE 컨트롤을 띄운 시험 창) 상대로 체크칸 끄기,
+라디오 고르기(`onclick` 실행 확인), 입력란·목록 입력(`onchange` 실행 확인), 같은
+출처 iframe 안 입력, 알림창을 띄우는 링크(43~70ms 에 돌아옴), 알림창 닫기
+(`message:BM_CLICK`). 커서 이동 0, 전경 변화 0 — 첫 실행의 1건은 교훈 31.
+IE11 표준 모드 페이지(`outer_edge.html`)에서도 같은 동작을 확인했습니다.
 
 ## 여기서 이어서 하세요
 

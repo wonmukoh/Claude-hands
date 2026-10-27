@@ -60,6 +60,24 @@ def _running_hwp():
     )
 
 
+def _document_text(app) -> str:
+    """The whole document as text.
+
+    한글 2024 answers ``"TEXT"``. The web control K-에듀파인 embeds was reported
+    answering ``"UNICODE"`` (by the session that drove it; not measured here),
+    so that is the second try rather than a guess left out.
+    """
+
+    for kind in ("TEXT", "UNICODE"):
+        try:
+            text = com_retry(lambda kind=kind: app.GetTextFile(kind, ""))
+        except Exception:  # noqa: BLE001 - try the other format
+            continue
+        if text:
+            return str(text)
+    return ""
+
+
 def _field_names(app) -> list[str]:
     raw = com_retry(lambda: app.GetFieldList(0, 0)) or ""
     return [name for name in str(raw).split(FIELD_SEPARATOR) if name]
@@ -106,8 +124,7 @@ class HwpAdapter:
         app = document["app"]
         single = document["windows"] <= 1
 
-        text = com_retry(lambda: app.GetTextFile("TEXT", "")) or ""
-        text = str(text).replace("\r\n", "\n")
+        text = _document_text(app).replace("\r\n", "\n")
         emit(
             OfficeElement(
                 role="document",

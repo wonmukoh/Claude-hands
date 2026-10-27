@@ -137,6 +137,10 @@ class WindowSession:
             self.active_engine = "office"
             return self._build_office_tree(options)
 
+        if self.engine == "mshtml":
+            self.active_engine = "mshtml"
+            return self._build_mshtml_tree(options)
+
         # `auto` reaches for the document model first on an Office window,
         # because UIA cannot see inside one: PowerPoint's slides carry no value
         # pattern, so a UIA tree of PowerPoint can be read and clicked but
@@ -150,6 +154,17 @@ class WindowSession:
                 return result
             except ClaudeHandsError as exc:
                 self.engine_note = f"Office 문서 모델을 쓸 수 없어 UI 트리로 전환했습니다: {exc}"
+
+        # Likewise a window that is mostly a web page goes to the page's DOM:
+        # UIA flattens old-style forms into text — measured on K-에듀파인, its
+        # checkboxes arrived with no role and no checked state.
+        if self.engine == "auto" and not self._is_office_process() and self._is_web_window():
+            try:
+                result = self._build_mshtml_tree(options)
+                self.active_engine = "mshtml"
+                return result
+            except ClaudeHandsError as exc:
+                self.engine_note = f"웹 문서를 읽을 수 없어 UI 트리로 전환했습니다: {exc}"
 
         from .uia.core import UiaUnavailableError, build_tree, element_from_hwnd
 
@@ -176,6 +191,22 @@ class WindowSession:
         from .office.core import ADAPTERS
 
         return (self.info.process or "").lower() in ADAPTERS
+
+    def _is_web_window(self) -> bool:
+        from .mshtml.core import dominant_ie_server
+
+        try:
+            return dominant_ie_server(self.hwnd) is not None
+        except Exception:  # noqa: BLE001 - not a reason to fail a snapshot
+            return False
+
+    def _build_mshtml_tree(self, options: SnapshotOptions):
+        """Read the page through its DOM, on the single-threaded COM worker."""
+
+        from .mshtml.core import build_mshtml_tree
+        from .uia.core import get_sta_worker
+
+        return get_sta_worker().call(build_mshtml_tree, self.hwnd, max_nodes=options.max_nodes)
 
     def _build_office_tree(self, options: SnapshotOptions):
         """Reach the document through the application's own object model.
@@ -322,9 +353,9 @@ class SessionManager:
         exact_title: bool = False,
         engine: str = "auto",
     ) -> WindowSession:
-        if engine not in {"auto", "uia", "win32", "office"}:
+        if engine not in {"auto", "uia", "win32", "office", "mshtml"}:
             raise ClaudeHandsError(
-                f"engine 은 auto/uia/win32/office 중 하나여야 합니다: {engine!r}"
+                f"engine 은 auto/uia/win32/office/mshtml 중 하나여야 합니다: {engine!r}"
             )
         info = find_window(
             hwnd=hwnd, title=title, process=process, pid=pid, exact_title=exact_title
