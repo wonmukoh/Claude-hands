@@ -599,10 +599,21 @@ PAGE_TEXT_JS = r"""(function () {
     var BLOCK = {P:1, DIV:1, TR:1, LI:1, UL:1, OL:1, DL:1, DT:1, DD:1, TABLE:1, FORM:1,
                  H1:1, H2:1, H3:1, H4:1, H5:1, H6:1, CENTER:1, PRE:1, BLOCKQUOTE:1,
                  FIELDSET:1, LEGEND:1, CAPTION:1, ADDRESS:1, HR:1};
+    var root = document.documentElement || {};
+    var sx = Math.max(document.body ? document.body.scrollLeft : 0, root.scrollLeft || 0);
+    var sy = Math.max(document.body ? document.body.scrollTop : 0, root.scrollTop || 0);
+    // Pages hide a layer three ways, and the 기안 window's 결재경로설정 layer
+    // used neither of the first two: display/visibility, a box moved wholly
+    // off the page, or a zero-size box that clips what is inside it.
     function hidden(n) {
         try {
             var s = n.currentStyle;
-            return s && (s.display === 'none' || s.visibility === 'hidden');
+            if (s && (s.display === 'none' || s.visibility === 'hidden')) return true;
+            // Either side will do: quirks mode grows a height:0 box to fit
+            // its text, and a zero width still clips all of it (measured).
+            if ((n.offsetWidth === 0 || n.offsetHeight === 0) && s && s.overflow === 'hidden') return true;
+            var r = n.getBoundingClientRect();
+            return (r.right > r.left || r.bottom > r.top) && (r.right + sx <= 0 || r.bottom + sy <= 0);
         } catch (e) { return false; }
     }
     function walk(n) {

@@ -296,7 +296,7 @@ def test_a_hidden_input_shown_by_its_label_is_still_listed():
 
 
 def test_page_text_leaves_out_scripts_and_hidden_parts():
-    for skipped in ("SCRIPT:1", "STYLE:1", "display === 'none'"):
+    for skipped in ("SCRIPT:1", "STYLE:1", "display === 'none'", "overflow === 'hidden'", "r.right + sx <= 0"):
         assert skipped in core.PAGE_TEXT_JS
 
 

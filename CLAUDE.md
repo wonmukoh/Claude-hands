@@ -624,7 +624,11 @@ input 의 `click()` 이라 `onclick` 이 돕니다. `…View` 로 끝나는 짝�
 
 같은 세션이 `read_text` 가 `<script>` 안 글자를 본문보다 먼저 돌려준다고 알렸습니다 —
 `body.innerText` 가 인라인 스크립트를 포함했습니다. 이제 페이지 안에서 DOM 을 걸으며
-script·style·숨긴 요소를 빼고 모읍니다(`PAGE_TEXT_JS`).
+script·style·숨긴 요소를 빼고 모읍니다(`PAGE_TEXT_JS`). 숨김은 세 가지로 봅니다:
+display/visibility, 페이지 밖으로 통째로 뺀 상자, 그리고 한 변이 0 이면서
+`overflow:hidden` 인 상자 — 기안 창의 결재경로설정 레이어 글자가 앞의 둘로는 안
+걸러졌습니다. 쿼크 모드는 `height:0` 상자를 글자에 맞춰 키우므로(실측 0x72) 두 변이
+다 0 일 것을 요구하면 놓칩니다.
 
 ## 지금까지 검증된 것
 

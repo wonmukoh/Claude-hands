@@ -124,7 +124,7 @@ def main() -> int:
     def page_log():
         time.sleep(0.3)
         text = actions.get_text(session)
-        for hidden in ("스크립트글자", "숨긴글자"):
+        for hidden in ("스크립트글자", "숨긴글자", "화면밖글자", "잘린글자"):
             assert hidden not in text, f"읽은 글에 '{hidden}' 가 섞였습니다"
         for word in ("첨부 클릭", "긴급 클릭", "비공개 클릭", "메모 바뀜", "구분 바뀜", "확인 눌림"):
             assert word in text, f"페이지 처리기가 '{word}' 를 남기지 않았습니다"
