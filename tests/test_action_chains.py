@@ -972,7 +972,7 @@ def test_approval_and_sending_buttons_are_never_pressed(rec, node, monkeypatch):
 
 
 @pytest.mark.parametrize("name", ["결재", "결재하기", "승인", "전결", "대결", "연속결재",
-                                  "일괄결재", "일괄과제결재", "결재 (F2)"])
+                                  "일괄결재", "일괄과제결재", "결재 (F2)", "문서처리"])
 def test_approving_someone_elses_document_is_left_to_the_user(rec, name, monkeypatch):
     # "결재(승인) 버튼도 내가 직접 누를게" — the user, 2026-10-27.
     monkeypatch.delenv(actions.ALLOW_SEND_ENV, raising=False)
@@ -983,6 +983,30 @@ def test_approving_someone_elses_document_is_left_to_the_user(rec, name, monkeyp
     with pytest.raises(actions.UserOnlyActionError):
         actions.click(session, "e1")
     assert pattern.calls == []
+
+
+def test_the_approval_windows_way_in_is_refused_by_its_id_too(rec, monkeypatch):
+    # K-에듀파인's 결재 window has no button called 결재: 문서처리 (processdoc)
+    # opens the approval dialog, and can submit after a single confirm.
+    monkeypatch.delenv(actions.ALLOW_SEND_ENV, raising=False)
+    node = link("", "processdoc")
+    pattern = FakePattern()
+    session = make_session({"e1": (node, FakeElement(node, {"invoke": pattern}))})
+
+    with pytest.raises(actions.UserOnlyActionError):
+        actions.click(session, "e1")
+    assert pattern.calls == []
+
+
+@pytest.mark.parametrize("name, dom_id", [("의견조회", "retrieveopinion"), ("이력보기", "histex"),
+                                          ("본문복사", "copyBody"), ("요약", "sumry")])
+def test_the_approval_windows_reading_links_stay_pressable(rec, name, dom_id, monkeypatch):
+    monkeypatch.delenv(actions.ALLOW_SEND_ENV, raising=False)
+    node = link(name, dom_id)
+    pattern = FakePattern()
+    session = make_session({"e1": (node, FakeElement(node, {"invoke": pattern}))})
+
+    assert actions.click(session, "e1").ok
 
 
 @pytest.mark.parametrize("name, dom_id", [("결재경로", "reportcours"), ("결재경로지정", "btnApprProperty"),

@@ -236,8 +236,10 @@ def click(
 USER_ONLY_LABELS = {
     # Sending a draft on, for approval or out of the school.
     "결재올림", "결재상신", "상신", "발송", "발송처리", "발송의뢰", "즉시발송", "일괄발송",
-    # Approving someone else's document.
-    "결재", "결재하기", "승인", "전결", "대결", "연속결재", "일괄결재", "일괄과제결재",
+    # Approving someone else's document. In K-에듀파인's 결재 window there is no
+    # button by those names: 문서처리 opens the approval dialog, and when the
+    # approval line has changed it submits after a single confirm.
+    "결재", "결재하기", "승인", "전결", "대결", "연속결재", "일괄결재", "일괄과제결재", "문서처리",
 }
 """Buttons that commit the user to a document, said by their whole label.
 
@@ -252,8 +254,9 @@ CHOOSING_ROLES = {"listitem", "radiobutton", "checkbox", "combobox", "edit", "ta
 """Roles that only choose, never commit. The approver dialog's 결재유형 list
 offers 결재·전결·대결 as options, and picking one is part of drafting."""
 
-USER_ONLY_IDS = {"sanctn"}
-"""The same buttons by DOM id — K-에듀파인 기안 window's 결재올림 is ``sanctn``."""
+USER_ONLY_IDS = {"sanctn", "processdoc"}
+"""The same buttons by DOM id: K-에듀파인's 결재올림 (기안 window) and 문서처리
+(결재 window, ``fncProcessDoc``)."""
 
 ALLOW_SEND_ENV = "CLAUDE_HANDS_ALLOW_SEND"
 
