@@ -167,7 +167,7 @@ def click(
     node, element = session.resolve(ref)
     attempts: list[str] = []
     label = _target_label(node)
-    _refuse_user_only(node.name, node.automation_id)
+    _refuse_user_only(node.name, node.automation_id, node.role)
 
     if not node.enabled:
         raise ActionFailedError(f"{label} 은(는) 비활성 상태라 누를 수 없습니다.")
@@ -234,14 +234,23 @@ def click(
 
 
 USER_ONLY_LABELS = {
+    # Sending a draft on, for approval or out of the school.
     "결재올림", "결재상신", "상신", "발송", "발송처리", "발송의뢰", "즉시발송", "일괄발송",
+    # Approving someone else's document.
+    "결재", "결재하기", "승인", "전결", "대결", "연속결재", "일괄결재", "일괄과제결재",
 }
-"""Buttons that put a document in front of other people, said by their label.
+"""Buttons that commit the user to a document, said by their whole label.
 
-The user's words: "발송은 내가 하더라도 임시저장은 하게 해줘". Preparing a draft
-and saving it is this tool's job; sending it on, for approval or out of the
-school, is the user's, because it cannot be taken back.
+The user's words: "발송은 내가 하더라도 임시저장은 하게 해줘", and later "결재(승인)
+버튼도 내가 직접 누를게". Preparing a draft and saving it is this tool's job;
+sending it on or signing someone else's is the user's, because neither can be
+taken back. Only a whole label counts: 결재경로, 결재정보 and 나의결재선 are
+drafting, and stay pressable.
 """
+
+CHOOSING_ROLES = {"listitem", "radiobutton", "checkbox", "combobox", "edit", "tabitem", "treeitem"}
+"""Roles that only choose, never commit. The approver dialog's 결재유형 list
+offers 결재·전결·대결 as options, and picking one is part of drafting."""
 
 USER_ONLY_IDS = {"sanctn"}
 """The same buttons by DOM id — K-에듀파인 기안 window's 결재올림 is ``sanctn``."""
@@ -262,23 +271,25 @@ def _bare_labels(text: str) -> set[str]:
     return {bare(re.sub(r"[(\[（［].*?[)\]）］]", "", text or "")), bare(text or "")}
 
 
-def _refuse_user_only(name: str, automation_id: str = "") -> None:
-    """Refuse to press 결재올림·발송 and their kin.
+def _refuse_user_only(name: str, automation_id: str = "", role: str = "") -> None:
+    """Refuse to press 결재올림·발송·결재 and their kin.
 
     Refused, not warned about: a warning arrives after the click, and by then
-    the document has gone. The match is on the label whatever the role, because
-    a page lists a link's caption a second time as plain text, and clicking
+    the document has gone. Plain text counts as well as buttons and links,
+    because a page lists a link's caption a second time as text, and clicking
     that text lands on the link. Only whoever starts the server can lift this,
     with ``CLAUDE_HANDS_ALLOW_SEND`` — a caller cannot argue its way past it.
     """
 
     if os.environ.get(ALLOW_SEND_ENV, "").lower() in {"1", "true", "yes"}:
         return
+    if role in CHOOSING_ROLES:
+        return
     if _bare_labels(name) & USER_ONLY_LABELS or (automation_id or "").lower() in USER_ONLY_IDS:
         shown = (name or automation_id).strip()
         raise UserOnlyActionError(
             f"「{shown}」은(는) 사용자가 직접 누르는 버튼이라 이 도구는 누르지 않습니다. "
-            "결재를 올리거나 문서를 보내는 일은 되돌릴 수 없어서 사용자의 몫입니다. "
+            "결재를 올리거나 승인하거나 문서를 보내는 일은 되돌릴 수 없어서 사용자의 몫입니다. "
             "준비가 끝났다고 사용자에게 알리세요. 저장만 필요하면 임시저장을 누르면 됩니다."
         )
 
@@ -604,7 +615,7 @@ def press_keys(
     if ref:
         node, _element = session.resolve(ref)
         # Enter on a focused link presses it as surely as a click does.
-        _refuse_user_only(node.name, node.automation_id)
+        _refuse_user_only(node.name, node.automation_id, node.role)
         target_hwnd = _owning_hwnd(session, node)
         label = _target_label(node)
 
@@ -642,7 +653,7 @@ def focus(session: WindowSession, ref: str) -> ActionResult:
     node, element = session.resolve(ref)
     label = _target_label(node)
     # Focus it, then send Enter to the window: the same press by two steps.
-    _refuse_user_only(node.name, node.automation_id)
+    _refuse_user_only(node.name, node.automation_id, node.role)
     try:
         _call(element, lambda: element.com.SetFocus())
         return ActionResult(True, "focus", f"{_engine(element)}:SetFocus", label)

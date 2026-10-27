@@ -971,6 +971,44 @@ def test_approval_and_sending_buttons_are_never_pressed(rec, node, monkeypatch):
     assert pattern.calls == [] and rec.clicks == []
 
 
+@pytest.mark.parametrize("name", ["결재", "결재하기", "승인", "전결", "대결", "연속결재",
+                                  "일괄결재", "일괄과제결재", "결재 (F2)"])
+def test_approving_someone_elses_document_is_left_to_the_user(rec, name, monkeypatch):
+    # "결재(승인) 버튼도 내가 직접 누를게" — the user, 2026-10-27.
+    monkeypatch.delenv(actions.ALLOW_SEND_ENV, raising=False)
+    node = link(name, role="button")
+    pattern = FakePattern()
+    session = make_session({"e1": (node, FakeElement(node, {"invoke": pattern}))})
+
+    with pytest.raises(actions.UserOnlyActionError):
+        actions.click(session, "e1")
+    assert pattern.calls == []
+
+
+@pytest.mark.parametrize("name, dom_id", [("결재경로", "reportcours"), ("결재경로지정", "btnApprProperty"),
+                                          ("결재정보", ""), ("나의결재선", "streReportCours"),
+                                          ("결재선 목록", ""), ("반려", "")])
+def test_drafting_items_that_only_mention_approval_stay_pressable(rec, name, dom_id, monkeypatch):
+    monkeypatch.delenv(actions.ALLOW_SEND_ENV, raising=False)
+    node = link(name, dom_id)
+    pattern = FakePattern()
+    session = make_session({"e1": (node, FakeElement(node, {"invoke": pattern}))})
+
+    assert actions.click(session, "e1").ok and pattern.calls == [("Invoke",)]
+
+
+@pytest.mark.parametrize("role, patterns", [("listitem", ("selectionitem",)),
+                                            ("radiobutton", ("toggle",))])
+def test_choosing_the_kind_of_approval_while_drafting_is_not_approving(rec, role, patterns, monkeypatch):
+    # The approver dialog's 결재유형 list offers 결재·전결·대결 as options.
+    monkeypatch.delenv(actions.ALLOW_SEND_ENV, raising=False)
+    node = NodeInfo(role=role, name="전결", patterns=patterns, rect=Rect(100, 200, 180, 228))
+    pattern = FakePattern()
+    session = make_session({"e1": (node, FakeElement(node, {p: pattern for p in patterns}))})
+
+    assert actions.click(session, "e1").ok and pattern.calls
+
+
 def test_the_caption_next_to_the_link_is_refused_too(rec, monkeypatch):
     # The page lists 결재올림 a second time as plain text, and a click on that
     # text falls through to a coordinate click, onto the link underneath.
