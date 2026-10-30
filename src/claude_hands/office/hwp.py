@@ -78,6 +78,28 @@ def _document_text(app) -> str:
     return ""
 
 
+def _document_count(app) -> int:
+    try:
+        return int(com_retry(lambda: app.XHwpDocuments.Count))
+    except Exception:  # noqa: BLE001 - unknown is not "one"
+        return 2
+
+
+def _ensure_still_alone(app, attached: int) -> None:
+    from .core import _root_hwnd
+
+    windows = com_retry(lambda: app.XHwpWindows)
+    alone = _document_count(app) == 1 and int(com_retry(lambda: windows.Count)) == 1
+    if alone:
+        handle = int(com_retry(lambda: windows.Item(0).WindowHandle) or 0)
+        alone = bool(handle) and _root_hwnd(handle) == attached
+    if not alone:
+        raise OfficeUnavailableError(
+            "한글에 문서가 둘 이상 열려 있어 쓰지 않았습니다. 한글의 누름틀 입력은 지금 활성인 "
+            "문서에 들어가서, 이 창의 문서라는 보장이 없습니다. 다른 문서를 닫고 다시 시도하세요."
+        )
+
+
 def _field_names(app) -> list[str]:
     raw = com_retry(lambda: app.GetFieldList(0, 0)) or ""
     return [name for name in str(raw).split(FIELD_SEPARATOR) if name]
@@ -122,7 +144,10 @@ class HwpAdapter:
     @staticmethod
     def walk(document, emit, budget):
         app = document["app"]
-        single = document["windows"] <= 1
+        attached = document.get("hwnd")
+        # 한글 opens further documents as tabs of one window, so one window is
+        # not one document: count both.
+        single = document["windows"] <= 1 and (attached is None or _document_count(app) <= 1)
 
         text = _document_text(app).replace("\r\n", "\n")
         emit(
@@ -145,6 +170,11 @@ class HwpAdapter:
                 return str(com_retry(lambda: app.GetFieldText(name)) or "")
 
             def write(value: str, name=name) -> None:
+                if attached is not None:
+                    # Decided at snapshot time is not enough: the user may
+                    # have opened another document since, and PutFieldText
+                    # writes to whichever is active.
+                    _ensure_still_alone(app, attached)
                 com_retry(lambda: app.PutFieldText(name, value))
 
             emit(

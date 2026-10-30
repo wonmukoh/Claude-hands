@@ -272,7 +272,11 @@ class WindowSession:
                     raise RefNotFoundError(f"{ref} 에 연결된 UI 요소가 사라졌습니다.")
                 return node, element
 
-            match = self._find_equivalent(stale)
+            # The identity map gave the ref back to the same element if it is
+            # still there, under its own identity (lesson 16).
+            match = self.refs.get(ref)
+            if match is None:
+                match = self._find_equivalent(stale)
             if match is None:
                 raise RefNotFoundError(
                     f"{ref} ({stale.role} \"{stale.name}\") 요소가 화면에서 사라졌습니다. "
@@ -292,17 +296,29 @@ class WindowSession:
             for node in self.tree.walk():
                 if node.runtime_id and node.runtime_id == stale.runtime_id:
                     return node
+        # A reopened dialog gives its buttons new runtime ids, so they are found
+        # again by what they are — but only when that is unambiguous. A list
+        # has a 「삭제」 on every row, and rebinding a ref to whichever comes
+        # first deletes the wrong row. The old last resort, role and name
+        # alone, did exactly that and is gone.
         wanted = self._fingerprint(stale)
-        for node in self.tree.walk():
-            if self._fingerprint(node) == wanted:
-                return node
-        # Last resort: same role and name, ignoring class/automation id churn.
-        for node in self.tree.walk():
-            if node.role == stale.role and node.name and node.name == stale.name:
-                return node
-        return None
+        matches = [node for node in self.tree.walk() if self._fingerprint(node) == wanted]
+        return matches[0] if len(matches) == 1 else None
 
     def _element_alive(self, element) -> bool:
+        probe = getattr(element, "is_alive", None)
+        if probe is not None:
+            engine = getattr(element, "engine", "uia")
+            try:
+                if engine == "uia":
+                    from .uia.core import get_worker
+
+                    return bool(get_worker().call(probe, timeout=10))
+                return bool(probe())
+            except Exception:  # noqa: BLE001 - a probe that fails means gone
+                return False
+        # Engines without a probe (office, mshtml) check their target when they
+        # act on it, so a ref of theirs is taken as alive here.
         try:
             return element.rect is not None or bool(element.name) or element.enabled
         except Exception:  # noqa: BLE001 - dead COM pointer
@@ -367,6 +383,15 @@ class SessionManager:
                 self._sessions[info.hwnd] = session
             else:
                 session.info = info
+                if session.engine != engine:
+                    # Refs belong to the engine that issued them: after switching
+                    # uia → win32 to keep the foreground, e5 was still a UIA
+                    # element and was pressed through UIA.
+                    session.tree = None
+                    session.refs = {}
+                    session.elements = {}
+                    session.ref_identities = {}
+                    session.engine_note = ""
                 session.engine = engine
             self._current = info.hwnd
             return session

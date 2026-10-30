@@ -156,7 +156,8 @@
                 var img = el.getElementsByTagName('img');
                 linkText = img.length ? clean(img[0].alt || img[0].title) : clean(el.title);
             }
-            if (linkText || el.onclick) emit(i, -1, 'hyperlink', el, linkText || el.id, '', '');
+            // An image link with no words still goes somewhere when pressed.
+            if (linkText || el.onclick || el.href) emit(i, -1, 'hyperlink', el, linkText || el.id, '', '');
         } else if (tag === 'OBJECT' || tag === 'EMBED') {
             emit(i, -1, 'activex', el, el.id || el.name, lower(el.classid), '');
         } else if (el.onclick && (tag === 'IMG' || tag === 'SPAN' || tag === 'TD' || tag === 'DIV' || tag === 'LI')) {
@@ -168,9 +169,22 @@
 
     // Words inside a link or button are its caption: clicking them presses
     // it. Words in a plain table cell press nothing.
+    //
+    // A handler attached with jQuery or attachEvent leaves no onclick property
+    // to see, so a pointer cursor counts too — that is how such a page tells
+    // a person "this presses". Table rows and cells are left out: a row you
+    // click to select shows the same cursor over its 결재 column, and lesson
+    // 34's false refusal came from there.
+    var ROW_PARTS = {TR:1, TD:1, TH:1, TBODY:1, THEAD:1, TABLE:1};
+    function pointing(n) {
+        try {
+            var cursor = n.currentStyle ? n.currentStyle.cursor : '';
+            return !ROW_PARTS[n.tagName] && (cursor === 'pointer' || cursor === 'hand');
+        } catch (e) { return false; }
+    }
     function pressable(n) {
         for (; n && n.tagName && n.tagName !== 'BODY'; n = n.parentNode) {
-            if (n.tagName === 'A' || n.tagName === 'BUTTON' || n.onclick) return true;
+            if (n.tagName === 'A' || n.tagName === 'BUTTON' || n.onclick || pointing(n)) return true;
         }
         return false;
     }

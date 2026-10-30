@@ -49,10 +49,19 @@ class Report:
         except Exception as exc:  # noqa: BLE001 - a failed step is a result
             detail, ok = f"{type(exc).__name__}: {exc}", False
         after = state()
+        # Still a failure — the check is not relaxed — but the step's own
+        # outcome is kept, so a person moving the mouse during a run does not
+        # hide whether the action itself worked.
+        own = f" (동작 자체: {'성공' if ok else '실패'} — {detail})"
+        # Both are checked: a cursor moved by a person must not hide a
+        # foreground the tool took in the same step.
+        broken = []
         if after[0] != before[0]:
-            ok, detail = False, f"커서가 움직임 {before[0]} → {after[0]}"
-        elif after[1] != before[1]:
-            ok, detail = False, f"전경 창이 바뀜 {before[1]} → {after[1]}"
+            broken.append(f"커서가 움직임 {before[0]} → {after[0]}")
+        if after[1] != before[1]:
+            broken.append(f"전경 창이 바뀜 {before[1]} → {after[1]}")
+        if broken:
+            ok, detail = False, " · ".join(broken) + own
         self.results.append((ok, label))
         print(f"[{'PASS' if ok else 'FAIL'}] {label}: {detail}")
 
@@ -131,6 +140,45 @@ def main() -> int:
         return "처리기가 모두 돌았고, 스크립트·숨긴 글은 읽은 글에 없음"
 
     report.step("페이지 처리기 실행", page_log)
+
+    def refusals():
+        from claude_hands.actions import UserOnlyActionError
+
+        for name, role in (("결재올림", "hyperlink"), ("결재하기", "text")):
+            try:
+                actions.click(session, ref(name, role))
+            except UserOnlyActionError:
+                continue
+            raise AssertionError(f"{name} 이(가) 거절되지 않았습니다")
+        cell = [n for n in session.tree.walk() if n.role == "text" and n.name == "결재"][0]
+        assert not session.elements[id(cell)].inside_pressable, "결재경로표의 「결재」 칸을 누르는 것으로 봤습니다"
+        return "결재올림 링크·jQuery 식 결재하기는 거절, 결재경로표 「결재」 칸은 그대로"
+
+    report.step("사용자 몫 거절", refusals)
+
+    def page_changed():
+        from claude_hands.mshtml.core import PageChangedError, document_of, ie_servers
+        from claude_hands.uia.core import get_sta_worker
+
+        cancel = ref("취소", "hyperlink")
+        # The page re-renders: a link appears above 취소, so its index now names another link.
+        get_sta_worker().call(lambda: document_of(ie_servers(session.hwnd)[0]).parentWindow.execScript(
+            "var a = document.createElement('a'); a.href = '#'; a.innerText = '끼어든 링크';"
+            "a.onclick = function () { note('끼어든 링크 눌림'); return false; };"
+            "document.body.insertBefore(a, document.body.firstChild);", "JScript"))
+        try:
+            actions.click(session, cancel)
+        except PageChangedError:
+            pass
+        else:
+            time.sleep(0.3)
+            assert "끼어든 링크 눌림" not in actions.get_text(session), "옛 ref 가 다른 링크를 눌렀습니다"
+            return "취소를 다시 찾아 눌렀음"
+        time.sleep(0.3)
+        assert "끼어든 링크 눌림" not in actions.get_text(session), "옛 ref 가 다른 링크를 눌렀습니다"
+        return "자리가 바뀐 것을 알아채고 아무것도 누르지 않았음"
+
+    report.step("페이지가 바뀐 뒤 옛 ref", page_changed)
 
     passed = sum(ok for ok, _ in report.results)
     print(f"\n{passed}/{len(report.results)} 통과")

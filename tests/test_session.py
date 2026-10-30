@@ -58,7 +58,9 @@ def test_find_equivalent_falls_back_to_fingerprint():
     assert match.runtime_id == (99, 1)
 
 
-def test_find_equivalent_falls_back_to_role_and_name():
+def test_find_equivalent_does_not_rebind_on_role_and_name_alone():
+    # Rebinding by role and name pressed a different control that happened to
+    # share a caption; a ref that cannot be found again must say so.
     session = make_session()
     tree = tree_with("저장")
     tree.children[0].automation_id = "somethingElse"
@@ -69,7 +71,52 @@ def test_find_equivalent_falls_back_to_role_and_name():
         role="button", name="저장", automation_id="saveBtn",
         class_name="Button", runtime_id=(42, 7),
     )
-    assert session._find_equivalent(stale) is not None
+    assert session._find_equivalent(stale) is None
+
+
+def test_find_equivalent_refuses_an_ambiguous_match():
+    # Every row of a list has its own 「삭제」.
+    session = make_session()
+    tree = tree_with("삭제")
+    tree.children.append(
+        NodeInfo(role="button", name="삭제", automation_id="saveBtn", class_name="Button")
+    )
+    for child in tree.children:
+        child.runtime_id = ()
+    session.tree = tree
+    stale = NodeInfo(role="button", name="삭제", automation_id="saveBtn",
+                     class_name="Button", runtime_id=(9, 9))
+    assert session._find_equivalent(stale) is None
+
+
+def test_a_dead_element_is_not_taken_for_alive():
+    session = make_session()
+
+    class Gone:
+        engine = "win32"
+        rect = None
+        name = "확인"
+        enabled = True
+
+        def is_alive(self):
+            return False
+
+    assert session._element_alive(Gone()) is False
+
+
+def test_switching_engines_drops_the_refs_of_the_old_one(monkeypatch):
+    import claude_hands.session as module
+
+    info = make_session().info
+    monkeypatch.setattr(module, "find_window", lambda **kw: info)
+    manager = module.SessionManager()
+    session = manager.attach(hwnd=info.hwnd, engine="uia")
+    session.refs["e5"] = NodeInfo(role="button", name="확인")
+    session.ref_identities[("x",)] = "e5"
+
+    again = manager.attach(hwnd=info.hwnd, engine="win32")
+
+    assert again is session and session.refs == {} and session.ref_identities == {}
 
 
 def test_find_equivalent_returns_none_when_element_is_gone():

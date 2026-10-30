@@ -125,7 +125,7 @@ class Recorder:
 def rec(monkeypatch):
     recorder = Recorder()
 
-    monkeypatch.setattr(actions, "_call", lambda element, func, *a, **k: func(*a, **k))
+    monkeypatch.setattr(actions, "_call", lambda element, func, *a, _timeout=None, **k: func(*a, **k))
     monkeypatch.setattr(actions, "deepest_child_at", lambda hwnd, x, y: hwnd + 1)
 
     def fake_click(top, x, y, *, button="left", double=False, modifiers=(), target_hwnd=None):
@@ -521,15 +521,51 @@ def test_a_control_that_will_not_report_its_value_is_given_the_benefit(rec):
     assert rec.set_texts == [], "먹혔다고 봤으면 WM_SETTEXT 까지 갈 이유가 없습니다"
 
 
-def test_readonly_value_pattern_falls_back_to_wm_settext(rec):
+def test_a_read_only_field_is_not_written_by_another_route(rec):
+    # WM_SETTEXT ignores ES_READONLY, so falling through to it overwrote a
+    # field the program had locked — a computed total, say — and called it done.
     node = edit(hwnd=42)
     value = FakePattern(CurrentIsReadOnly=True)
     session = make_session({"e1": (node, FakeElement(node, {"value": value}))})
 
-    result = actions.type_text(session, "e1", "내용")
+    with pytest.raises(actions.ReadOnlyFieldError):
+        actions.type_text(session, "e1", "내용")
+    assert rec.set_texts == []
+    assert not any(call[0] == "SetValue" for call in value.calls)
 
-    assert result.strategy == "message:WM_SETTEXT"
-    assert rec.set_texts == [(42, "내용")]
+
+def test_appending_text_that_never_landed_is_a_failure(rec):
+    # "abc" + "def" reads back "abc", which is inside "abcdef": the old
+    # containment check called that a success.
+    node = edit(hwnd=0)
+    value = FakePattern(CurrentValue="abc")
+    value.SetValue = lambda v: value.calls.append(("SetValue", v))  # takes nothing
+    session = make_session({"e1": (node, FakeElement(node, {"value": value}))})
+
+    with pytest.raises(ActionFailedError):
+        actions.type_text(session, "e1", "def", clear=False)
+
+
+def test_appending_builds_on_the_live_value_not_the_snapshot(rec):
+    node = edit(hwnd=0)
+    node.value = "옛값"
+    value = FakePattern(CurrentValue="지금값")
+    session = make_session({"e1": (node, FakeElement(node, {"value": value}))})
+
+    actions.type_text(session, "e1", "+", clear=False)
+
+    assert ("SetValue", "지금값+") in value.calls
+
+
+def test_submit_without_a_window_of_its_own_is_refused_before_typing(rec):
+    # Its Enter would go to the dialog around it and press the default button.
+    node = edit(hwnd=0)
+    value = FakePattern(CurrentValue="")
+    session = make_session({"e1": (node, FakeElement(node, {"value": value}))})
+
+    with pytest.raises(ActionFailedError, match="submit"):
+        actions.type_text(session, "e1", "검색어", submit=True)
+    assert value.calls == [] and rec.keys == []
 
 
 def test_last_resort_typing_focuses_then_sends_characters(rec):
@@ -872,7 +908,7 @@ def test_uia_engine_calls_go_through_the_com_worker(monkeypatch):
 
 
 def test_strategy_names_report_the_engine_that_actually_ran(monkeypatch):
-    monkeypatch.setattr(actions, "_call", lambda element, func, *a, **k: func(*a, **k))
+    monkeypatch.setattr(actions, "_call", lambda element, func, *a, _timeout=None, **k: func(*a, **k))
 
     node = NodeInfo(role="checkbox", name="옵션", patterns=("toggle",), toggle_state="off")
     element = Win32ishElement(node, {"toggle": FakePattern(CurrentToggleState=0)})
@@ -899,6 +935,7 @@ def buttons(monkeypatch):
 
     monkeypatch.setattr(actions, "is_button_class", lambda hwnd: True)
     monkeypatch.setattr(actions, "press_button", press)
+    monkeypatch.setattr(actions, "toggle_button", press)
     monkeypatch.setattr(actions, "button_check_state", lambda hwnd: states.get(hwnd, 0))
     return sent
 
@@ -912,7 +949,7 @@ def test_a_win32_push_button_is_pressed_by_message_not_uia_invoke(rec, buttons):
 
     result = actions.click(session, "e1")
 
-    assert result.strategy == "message:BM_CLICK"
+    assert result.strategy == "message:BN_CLICKED"
     assert buttons == [("BM_CLICK", 4242)]
     assert invoke.calls == []
 
@@ -925,7 +962,7 @@ def test_a_win32_checkbox_is_toggled_by_message_and_reads_back(rec, buttons):
 
     result = actions.toggle(session, "e1", to=True)
 
-    assert result.strategy == "message:BM_CLICK"
+    assert result.strategy == "message:BN_CLICKED"
     assert "on" in result.detail
     assert toggle.calls == []
 
@@ -1258,3 +1295,173 @@ def test_a_ref_that_is_not_a_control_is_refused(rec):
 
     with pytest.raises(ActionFailedError, match="컨트롤이 아닙니다"):
         actions.call_control(session, "e1", "GetTextFile")
+
+
+# --------------------------------------------------------------------------
+# Found in review: chains that should have stopped
+# --------------------------------------------------------------------------
+
+
+def test_check_on_a_push_button_named_balsong_is_refused(rec, buttons):
+    # set_element_state(action="check") reached BM_CLICK three times on 발송.
+    node = button("발송", hwnd=4242, class_name="Button")
+    session = make_session({"e1": (node, FakeElement(node, {"invoke": FakePattern()}))})
+
+    with pytest.raises(actions.UserOnlyActionError):
+        actions.toggle(session, "e1", to=True)
+    assert buttons == []
+
+
+def test_a_selected_radio_button_is_not_pressed_to_turn_it_off(rec, buttons):
+    node = NodeInfo(role="radiobutton", name="PDF", class_name="Button", hwnd=78,
+                    patterns=("toggle",), toggle_state="on")
+    session = make_session({"e1": (node, FakeElement(node, {"toggle": FakePattern()}))})
+    actions.toggle(session, "e1", to=True)  # selects it
+    pressed = list(buttons)
+
+    with pytest.raises(ActionFailedError, match="라디오"):
+        actions.toggle(session, "e1", to=False)
+    assert buttons == pressed
+
+
+def test_a_toggle_that_never_reaches_the_state_asked_for_is_a_failure(rec):
+    node = NodeInfo(role="checkbox", name="동의", patterns=("toggle",), toggle_state="off")
+    stuck = FakePattern(CurrentToggleState=0)
+    stuck.Toggle = lambda: stuck.calls.append(("Toggle",))  # the program refuses
+    session = make_session({"e1": (node, FakeElement(node, {"toggle": stuck}))})
+
+    with pytest.raises(ActionFailedError, match="원하는 상태"):
+        actions.toggle(session, "e1", to=True)
+
+
+def test_a_stale_ref_stops_the_click_instead_of_clicking_the_old_spot(rec):
+    from claude_hands.session import RefNotFoundError
+
+    node = button("확인")
+    invoke = FakePattern()
+
+    def gone():
+        raise RefNotFoundError("페이지가 바뀌었습니다")
+
+    invoke.Invoke = gone
+    session = make_session({"e1": (node, FakeElement(node, {"invoke": invoke}))})
+
+    with pytest.raises(RefNotFoundError):
+        actions.click(session, "e1")
+    assert rec.clicks == []
+
+
+def test_a_timed_out_click_is_not_tried_a_second_way(rec):
+    from claude_hands.uia.core import WorkerTimeoutError
+
+    node = button("저장")
+    invoke, legacy = FakePattern(), FakePattern()
+
+    def slow():
+        raise WorkerTimeoutError("늦음")
+
+    invoke.Invoke = slow
+    session = make_session({"e1": (node, FakeElement(node, {"invoke": invoke, "legacy": legacy}))})
+
+    with pytest.raises(WorkerTimeoutError):
+        actions.click(session, "e1")
+    assert legacy.calls == [] and rec.clicks == []
+
+
+def test_a_web_element_the_page_refused_is_not_clicked_by_coordinates(rec):
+    class WebLike(FakeElement):
+        engine = "mshtml"
+
+    node = button("확인")
+    invoke = FakePattern()
+    invoke.fail_on = {"Invoke"}
+    session = make_session({"e1": (node, WebLike(node, {"invoke": invoke}))})
+
+    with pytest.raises(ActionFailedError, match="snapshot"):
+        actions.click(session, "e1")
+    assert rec.clicks == []
+
+
+def test_a_menu_step_needs_a_near_exact_name(rec, monkeypatch):
+    node = NodeInfo(role="button", name="임시저장", patterns=("invoke",))
+    session = make_session({"e1": (node, FakeElement(node, {"invoke": FakePattern()}))})
+    monkeypatch.setattr(session, "find", lambda step, limit=8: [(0.6, node)])
+    import claude_hands.win32.menus as menus
+
+    monkeypatch.setattr(menus, "read_menu", lambda hwnd: [])
+
+    with pytest.raises(ActionFailedError, match="찾지 못했습니다"):
+        actions.menu_select(session, "저장")
+
+
+def test_a_toggle_button_named_balsong_is_refused_before_its_toggle_pattern(rec):
+    # A UIA toggle button has its own Toggle; the refusal must come first.
+    node = NodeInfo(role="button", name="발송", patterns=("toggle",), toggle_state="off")
+    toggle = FakePattern(CurrentToggleState=0)
+    session = make_session({"e1": (node, FakeElement(node, {"toggle": toggle}))})
+
+    with pytest.raises(actions.UserOnlyActionError):
+        actions.toggle(session, "e1", to=True)
+    assert toggle.calls == []
+
+
+# --------------------------------------------------------------------------
+# Classic Win32 edit boxes seen through UIA
+# --------------------------------------------------------------------------
+
+
+@pytest.fixture
+def edit_box(monkeypatch, rec):
+    import claude_hands.win32.defs as defs
+
+    texts = {77: "옛 글"}
+    style = {"value": 0}
+
+    class User32:
+        def GetWindowLongW(self, hwnd, index):
+            return style["value"]
+
+    monkeypatch.setattr(defs, "user32", User32(), raising=False)
+    monkeypatch.setattr(actions, "control_text", lambda hwnd: texts[hwnd])
+
+    def set_text(hwnd, text, **kw):
+        rec.set_texts.append((hwnd, text))
+        texts[hwnd] = text
+        return True
+
+    monkeypatch.setattr(actions, "set_window_text", set_text)
+    return texts, style
+
+
+def test_a_win32_edit_is_typed_into_by_message_not_uia_setvalue(rec, edit_box):
+    # UIA's SetValue on target_app's 입력란 took the foreground from the user.
+    node = NodeInfo(role="edit", name="입력란", class_name="Edit", hwnd=77, patterns=("value",))
+    value = FakePattern(CurrentValue="옛 글")
+    session = make_session({"e1": (node, FakeElement(node, {"value": value}))})
+
+    result = actions.type_text(session, "e1", "새 글")
+
+    assert result.strategy == "message:WM_SETTEXT"
+    assert rec.set_texts == [(77, "새 글")]
+    assert value.calls == []
+
+
+def test_appending_to_a_win32_edit_reads_what_is_there_now(rec, edit_box):
+    texts, _style = edit_box
+    node = NodeInfo(role="edit", name="입력란", class_name="Edit", hwnd=77, value="스냅샷 값")
+    session = make_session({"e1": (node, FakeElement(node, {}))})
+
+    actions.type_text(session, "e1", "+", clear=False)
+
+    assert texts[77] == "옛 글+"
+
+
+def test_a_read_only_win32_edit_is_left_alone(rec, edit_box):
+    _texts, style = edit_box
+    style["value"] = actions.ES_READONLY
+    node = NodeInfo(role="edit", name="합계", class_name="Edit", hwnd=77)
+    session = make_session({"e1": (node, FakeElement(node, {}))})
+
+    with pytest.raises(actions.ReadOnlyFieldError):
+        actions.type_text(session, "e1", "0")
+    assert rec.set_texts == []

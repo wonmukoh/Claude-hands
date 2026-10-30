@@ -285,6 +285,9 @@ def js_literal(value: Any) -> str:
     return json.dumps(value, ensure_ascii=True)
 
 
+MISSING_CONTROL = "페이지가 바뀌어 컨트롤을 다시 찾지 못했습니다. snapshot 을 다시 찍으세요."
+
+
 def call_script(element_ref: str, name: str, spec: Method, args: list, slot: str) -> str:
     """The page-side statement that makes the call and leaves its result in ``slot``."""
 
@@ -293,7 +296,9 @@ def call_script(element_ref: str, name: str, spec: Method, args: list, slot: str
     target = f"c.{name}" if spec.property else f"c.{name}({', '.join(js_literal(a) for a in args)})"
     return (
         "(function () { var c, r, t, s = ''; "
-        f"try {{ c = {element_ref}; r = {target}; t = typeof r; "
+        f"try {{ c = {element_ref}; "
+        f"if (!c) {{ throw new Error({js_literal(MISSING_CONTROL)}); }} "
+        f"r = {target}; t = typeof r; "
         "try { s = (r === null || r === undefined) ? '' : String(r); } catch (e2) { t = 'unknown'; } "
         f"document.{slot} = t + '\\x1f' + s; "
         f"}} catch (e) {{ document.{slot} = 'error\\x1f' + (e.message || e.description || e); }} "

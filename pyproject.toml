@@ -15,7 +15,9 @@ dependencies = [
     # DOM) are reached through pywin32; comtypes offers neither.
     "pywin32>=306 ; sys_platform == 'win32'",
     "pillow>=10.0.0",
-    "mcp>=1.2.0",
+    # The server supports the 1.x and 2.x SDKs (FastMCP and MCPServer); a 3.x could
+    # break a fresh install on a teacher's PC with nothing changed here.
+    "mcp>=1.2.0,<3",
 ]
 
 [project.optional-dependencies]

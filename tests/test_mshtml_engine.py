@@ -9,6 +9,7 @@ a modal dialog is called directly.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
@@ -59,17 +60,23 @@ class FakeAll:
 
 
 class FakeWindow:
-    def __init__(self):
+    def __init__(self, document=None):
         self.scheduled: list[str] = []
+        self.document = document
+        self.found = True  # what the page's own check would say
 
     def setTimeout(self, source, delay):
         self.scheduled.append(source)
+        # The page answers a guarded action on its next turn.
+        token = re.search(r"'(t\d+):ok'", source)
+        if token and self.document is not None:
+            self.document.claudeHandsAck = f"{token.group(1)}:{'ok' if self.found else 'miss'}"
 
 
 class FakeDocument:
     def __init__(self, nodes, by_id=None):
         self.all = FakeAll(nodes)
-        self.parentWindow = FakeWindow()
+        self.parentWindow = FakeWindow(self)
         self._by_id = by_id or {}
 
     def getElementById(self, dom_id):
@@ -132,7 +139,8 @@ def test_a_click_is_scheduled_inside_the_page_not_called(page):
 
     _InvokePattern(_Locator(1, (), 30, "A", "ok", "")).Invoke()
 
-    assert doc.parentWindow.scheduled == ["document.all[30].click()"]
+    [script] = doc.parentWindow.scheduled
+    assert "d.all[30]" in script and "e.click();" in script
 
 
 def test_a_checkbox_is_toggled_by_clicking_and_waits_for_the_change(page):
@@ -148,7 +156,8 @@ def test_a_checkbox_is_toggled_by_clicking_and_waits_for_the_change(page):
 
     pattern.Toggle()
 
-    assert doc.parentWindow.scheduled == ["document.all[11].click()"]
+    [script] = doc.parentWindow.scheduled
+    assert "d.all[11]" in script and "e.click();" in script
     assert pattern.CurrentToggleState == 0
 
 
@@ -180,7 +189,7 @@ def test_typing_sets_the_value_and_fires_onchange_inside_the_page(page):
     assert pattern.CurrentValue == "가나다"
     assert len(doc.parentWindow.scheduled) == 1
     assert "onchange" in doc.parentWindow.scheduled[0]
-    assert "document.all[23]" in doc.parentWindow.scheduled[0]
+    assert "d.all[23]" in doc.parentWindow.scheduled[0]
 
 
 def test_a_password_is_never_read_back(page):
@@ -369,7 +378,7 @@ def test_a_control_call_is_run_by_the_page_and_its_answer_read_back(page, monkey
 
     assert value == "본문입니다"
     [script] = doc.parentWindow.scheduled
-    assert "c = document.all[40]" in script
+    assert "d.all[40]" in script
     assert 'c.GetTextFile("UNICODE", "")' in script
 
 
@@ -474,3 +483,66 @@ def test_the_page_is_only_asked_when_the_control_has_no_size(monkeypatch):
     monkeypatch.setattr(core, "_page_area", lambda server: pytest.fail("asked the page needlessly"))
 
     assert core.dominant_ie_server(1) == 7
+
+
+# --------------------------------------------------------------------------
+# Found in review: acting on the element the snapshot saw, or on nothing
+# --------------------------------------------------------------------------
+
+
+def test_an_element_the_page_no_longer_has_is_not_pressed(page):
+    link = FakeNode("A", "ok")
+    doc = page({30: link})
+    doc.parentWindow.found = False  # the page's own check finds something else there
+
+    with pytest.raises(PageChangedError):
+        _InvokePattern(_Locator(1, (), 30, "A", "ok", "")).Invoke()
+
+
+def test_the_page_checks_the_element_when_the_action_runs():
+    # The click waits behind the page's own timers; a re-render in between
+    # moves the index onto another element, so the check runs inside the page.
+    script = _Locator(1, (), 30, "A", "", "", "확인").guarded("e.click();", "t9")
+    assert script.isascii()
+    assert "d.all[30]" in script and "e.click();" in script
+    assert "'t9:miss'" in script
+    assert "\\ud655\\uc778" in script  # the words it must still carry
+
+
+def test_an_element_moved_by_a_re_render_is_acted_on_where_it_is_now():
+    # Found again by id, it must not be pressed through the old index.
+    script = _Locator(1, (), 30, "INPUT", "attsave", "").script_ref()
+    assert "getElementById(ID)" in script
+
+
+def test_an_onclick_div_without_a_name_is_still_itself(page):
+    class Div:
+        tagName = "DIV"
+        id = "btnSave"
+
+        def __getattr__(self, name):
+            raise AttributeError(name)  # what pywin32 does for a missing property
+
+    div = Div()
+    page({50: div})
+
+    _doc, found = _Locator(1, (), 50, "DIV", "btnSave", "").element()
+
+    assert found is div
+
+
+def test_a_frame_that_is_no_longer_a_frame_is_reported(page):
+    page({7: FakeNode("DIV")})
+
+    with pytest.raises(PageChangedError):
+        _Locator(1, (7,), 11, "INPUT", "attsave", "").document()
+
+
+def test_a_partial_choice_that_fits_several_options_is_refused(page):
+    select = FakeNode("SELECT", "kind", selectedIndex=0,
+                      options=FakeOptions([("결재대기", "a"), ("결재완료", "b")]))
+    page({25: select})
+
+    with pytest.raises(ClaudeHandsError, match="여럿"):
+        _ValuePattern(_Locator(1, (), 25, "SELECT", "kind", ""), "select").SetValue("결재")
+    assert select.selectedIndex == 0

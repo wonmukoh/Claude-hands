@@ -193,9 +193,15 @@ class OfficeElement:
         read_only: bool = False,
         help_text: str = "",
         hwnd: int = 0,
+        automation_id: str = "",
     ) -> None:
         self.role = role
         self.name = name
+        # Part of the element's identity across snapshots (lesson 16). Names
+        # here are positions — 문단 3, 슬라이드 5 — so without this, inserting a
+        # paragraph above handed 문단 3's ref to the paragraph that moved into
+        # its place, and the next write went there.
+        self.automation_id = automation_id
         self._rect = rect
         self._read = read
         self._write = write
@@ -237,6 +243,7 @@ class OfficeElement:
             role=self.role,
             name=self.name,
             value=self.value() if patterns else "",
+            automation_id=self.automation_id,
             class_name="office",
             rect=self.rect,
             rect_space="document",
@@ -292,7 +299,13 @@ class PowerPointAdapter:
                 return
             slide = com_retry(lambda index=index: document.Slides.Item(index))
             name = f"슬라이드 {index}"
-            slide_node = emit(OfficeElement(role="group", name=name), depth=1, parent=None)
+            try:
+                slide_id = str(com_retry(lambda slide=slide: slide.SlideID))
+            except Exception:  # noqa: BLE001 - identity falls back to position
+                slide_id = ""
+            slide_node = emit(
+                OfficeElement(role="group", name=name, automation_id=slide_id), depth=1, parent=None
+            )
             shape_count = com_retry(lambda slide=slide: slide.Shapes.Count)
             if not budget.allows(2, name):
                 # Counting the shapes is one call; fetching them is one call
@@ -336,6 +349,28 @@ def _shape_element(shape) -> OfficeElement:
     return OfficeElement(role="edit", name=name, rect=rect, read=read, write=write)
 
 
+def _text_key(text: str) -> str:
+    """A short stand-in for a paragraph's text, for its identity."""
+
+    import zlib
+
+    return f"t{zlib.crc32(text.encode('utf-8')):08x}"
+
+
+def _column_letters(number: int) -> str:
+    letters = ""
+    while number:
+        number, rest = divmod(number - 1, 26)
+        letters = chr(65 + rest) + letters
+    return letters
+
+
+CELL_SCAN_LIMIT = 50_000
+"""Cells read per sheet. A sheet formatted down to row 1,048,576 has a used
+range of millions of cells, and walking it cell by cell was a cross-process
+call each — minutes on the shared worker, with every other window waiting."""
+
+
 class WordAdapter:
     """The document body, one paragraph at a time."""
 
@@ -362,11 +397,11 @@ class WordAdapter:
 
     @staticmethod
     def walk(document, emit, budget):
-        paragraphs = document.Paragraphs
-        for index in range(1, paragraphs.Count + 1):
+        paragraphs = com_retry(lambda: document.Paragraphs)
+        for index in range(1, com_retry(lambda: paragraphs.Count) + 1):
             if budget.spent():
                 return
-            paragraph = paragraphs.Item(index)
+            paragraph = com_retry(lambda index=index: paragraphs.Item(index))
 
             def read(paragraph=paragraph) -> str:
                 # Word terminates every paragraph with \r; it is a delimiter,
@@ -375,7 +410,14 @@ class WordAdapter:
                 return _text_of(lambda: paragraph.Range.Text).rstrip("\r\x07")
 
             def write(value: str, paragraph=paragraph) -> None:
-                paragraph.Range.Text = value
+                # The paragraph's range ends with its mark. Replacing the whole
+                # range deletes the mark too and joins this paragraph to the
+                # next one — a damaged document that the read-back still
+                # passed, because the new text was in there.
+                target = paragraph.Range.Duplicate
+                if str(target.Text).endswith(("\r", "\x07")):
+                    target.MoveEnd(1, -1)  # wdCharacter
+                target.Text = value
 
             text = read()
             emit(
@@ -385,6 +427,7 @@ class WordAdapter:
                     read=read,
                     write=write,
                     help_text=text[:60],
+                    automation_id=_text_key(text),
                 ),
                 depth=1,
                 parent=None,
@@ -393,6 +436,46 @@ class WordAdapter:
     @staticmethod
     def saved(document) -> bool:
         return bool(document.Saved)
+
+
+def _walk_cells(sheet, used, sheet_node, emit, budget) -> None:
+    """The cells of one sheet that hold something, read in a single call."""
+
+    rows = int(com_retry(lambda: used.Rows.Count))
+    cols = int(com_retry(lambda: used.Columns.Count))
+    first_row = int(com_retry(lambda: used.Row))
+    first_col = int(com_retry(lambda: used.Column))
+    read_rows = max(1, min(rows, CELL_SCAN_LIMIT // max(1, cols)))
+    area = used
+    if read_rows < rows:
+        area = com_retry(lambda: sheet.Range(
+            sheet.Cells(first_row, first_col),
+            sheet.Cells(first_row + read_rows - 1, first_col + cols - 1),
+        ))
+        sheet_node.truncated_children += rows - read_rows
+    values = com_retry(lambda: area.Value2)
+    if not isinstance(values, tuple):
+        values = ((values,),)
+
+    for r, row in enumerate(values):
+        for c, value in enumerate(row):
+            if value is None:
+                continue
+            if budget.spent():
+                return
+            address = f"{_column_letters(first_col + c)}{first_row + r}"
+
+            def read(address=address) -> str:
+                return _text_of(lambda: sheet.Range(address).Text)
+
+            def write(value: str, address=address) -> None:
+                sheet.Range(address).Value2 = value
+
+            emit(
+                OfficeElement(role="edit", name=address, read=read, write=write),
+                depth=2,
+                parent=sheet_node,
+            )
 
 
 class ExcelAdapter:
@@ -421,36 +504,19 @@ class ExcelAdapter:
 
     @staticmethod
     def walk(document, emit, budget):
-        for i in range(1, document.Worksheets.Count + 1):
+        sheets = com_retry(lambda: document.Worksheets)
+        for i in range(1, com_retry(lambda: sheets.Count) + 1):
             if budget.spent():
                 return
-            sheet = document.Worksheets.Item(i)
-            name = str(sheet.Name)
+            sheet = com_retry(lambda i=i: sheets.Item(i))
+            name = str(com_retry(lambda sheet=sheet: sheet.Name))
             sheet_node = emit(OfficeElement(role="group", name=name), depth=1, parent=None)
-            used = sheet.UsedRange
+            used = com_retry(lambda sheet=sheet: sheet.UsedRange)
             if not budget.allows(2, name):
                 slide_node_count = com_retry(lambda used=used: used.Count)
                 sheet_node.truncated_children = int(slide_node_count or 0)
                 continue
-            for cell in used:
-                if budget.spent():
-                    return
-                if cell.Value2 is None:
-                    continue
-
-                def read(cell=cell) -> str:
-                    return _text_of(lambda: cell.Text)
-
-                def write(value: str, cell=cell) -> None:
-                    cell.Value2 = value
-
-                emit(
-                    OfficeElement(
-                        role="edit", name=str(cell.Address(False, False)), read=read, write=write
-                    ),
-                    depth=2,
-                    parent=sheet_node,
-                )
+            _walk_cells(sheet, used, sheet_node, emit, budget)
 
     @staticmethod
     def saved(document) -> bool:
@@ -565,14 +631,34 @@ def build_office_tree(
             "다른 창을 골랐거나, 문서가 닫혔거나, 아직 여는 중일 수 있습니다."
         )
 
+    if isinstance(document, dict):
+        # 한글 checks again at the moment of writing that this is still the
+        # only document and still this window (lesson 21).
+        document.setdefault("hwnd", wanted)
+
+    try:
+        return _build(adapter, document, wanted, max_nodes, max_depth, expand)
+    except ClaudeHandsError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - a COM error mid-walk
+        # Excel in cell-edit mode, a dialog, a document closing under us: the
+        # raw COM error reached the caller untranslated and kept `auto` from
+        # falling back to the UI tree.
+        raise OfficeUnavailableError(
+            f"{adapter.label} 문서를 읽는 중에 프로그램이 거절했습니다 ({exc}). "
+            "셀을 편집 중이거나 대화상자가 떠 있을 수 있습니다. 그 상태를 끝내고 다시 시도하세요."
+        ) from exc
+
+
+def _build(adapter, document, wanted, max_nodes, max_depth, expand):
     element_index: dict[int, OfficeElement] = {}
     budget = _Budget(max_nodes, max_depth=max_depth, expand=expand)
 
     root_element = OfficeElement(
         role="document",
-        name=adapter.title(document),
+        name=com_retry(lambda: adapter.title(document)),
         hwnd=wanted,
-        help_text=f"{adapter.label} · 저장됨={adapter.saved(document)}",
+        help_text=f"{adapter.label} · 저장됨={com_retry(lambda: adapter.saved(document))}",
     )
     root = root_element.to_node_info(0)
     element_index[id(root)] = root_element

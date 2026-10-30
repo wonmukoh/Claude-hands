@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import ctypes
 import io
+import threading
 import time
 from dataclasses import dataclass
 
@@ -28,6 +29,7 @@ from .defs import (
 from .windows import (
     Rect,
     get_placement,
+    is_hung,
     is_minimized,
     minimize,
     move_window,
@@ -213,6 +215,31 @@ def capture_window(
 
     require_windows()
 
+    if is_hung(hwnd):
+        # Every call below waits on the window's own thread with no timeout.
+        # A frozen window would hang the tool — and, past the restore step,
+        # leave the user's window restored on screen until it recovered.
+        raise CaptureError(
+            "창이 응답하지 않아(응답 없음) 캡처하지 않았습니다. 프로그램이 돌아온 뒤 다시 "
+            "시도하거나, snapshot 으로 읽으세요."
+        )
+
+    with _lock_for(hwnd):
+        return _capture(hwnd, restore_if_minimized=restore_if_minimized, settle_seconds=settle_seconds)
+
+
+_capture_locks: dict[int, threading.Lock] = {}
+_capture_locks_guard = threading.Lock()
+
+
+def _lock_for(hwnd: int) -> threading.Lock:
+    # Two captures of one minimised window at once would let the second read
+    # the first one's parked position as the window's own and "restore" it there.
+    with _capture_locks_guard:
+        return _capture_locks.setdefault(hwnd, threading.Lock())
+
+
+def _capture(hwnd: int, *, restore_if_minimized: bool, settle_seconds: float) -> Capture:
     minimized = is_minimized(hwnd)
     if not minimized:
         rect = window_rect(hwnd)

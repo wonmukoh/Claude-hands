@@ -42,6 +42,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 from ..elements import NodeInfo
+from ..session import RefNotFoundError
 from ..win32.defs import ClaudeHandsError, require_windows
 from ..win32.windows import Rect
 from .activex import control_for, normalise_clsid
@@ -61,7 +62,7 @@ class MshtmlUnavailableError(ClaudeHandsError):
     """Raised when the window has no IE document this engine can reach."""
 
 
-class PageChangedError(ClaudeHandsError):
+class PageChangedError(RefNotFoundError):
     """Raised when the element a ref named is no longer where it was."""
 
 
@@ -263,18 +264,36 @@ class _Locator:
     a page that has navigated leaves the old object answering for nothing.
     """
 
-    def __init__(self, server_hwnd: int, frames: tuple[int, ...], index: int, tag: str, dom_id: str, dom_name: str):
+    def __init__(
+        self,
+        server_hwnd: int,
+        frames: tuple[int, ...],
+        index: int,
+        tag: str,
+        dom_id: str,
+        dom_name: str,
+        fingerprint: str = "",
+    ):
         self.server_hwnd = server_hwnd
         self.frames = frames
         self.index = index
         self.tag = tag
         self.dom_id = dom_id
         self.dom_name = dom_name
+        # What an element with no id or name said on it at snapshot time.
+        # Tag alone lets any <a> that slides into the index pass for this one,
+        # and the refusal only ever looked at the snapshot's caption.
+        self.fingerprint = fingerprint[:40]
 
     def document(self):
         document = document_of(self.server_hwnd)
         for frame_index in self.frames:
-            document = document.all.item(frame_index).contentWindow.document
+            frame = document.all.item(frame_index)
+            if frame is None or str(getattr(frame, "tagName", "")) not in {"IFRAME", "FRAME"}:
+                raise PageChangedError(
+                    "페이지가 바뀌어 요소가 있던 프레임을 다시 찾지 못했습니다. snapshot 을 다시 찍으세요."
+                )
+            document = frame.contentWindow.document
         return document
 
     def element(self):
@@ -295,18 +314,57 @@ class _Locator:
 
     def _same(self, candidate) -> bool:
         try:
+            # A <div> or <td> has no name property at all, and asking for one
+            # raised — which made every onclick-<div> button "changed".
+            name = getattr(candidate, "name", "")
             return (
                 str(candidate.tagName) == self.tag
                 and str(candidate.id or "") == self.dom_id
-                and str(candidate.name or "") == self.dom_name
+                and (name if isinstance(name, str) else "") == self.dom_name
             )
         except Exception:  # noqa: BLE001 - a node without these is not ours
             return False
 
     def script_ref(self) -> str:
-        """How the page's own script reaches this element."""
+        """An expression the page evaluates to this element, or to null.
 
-        return f"document.all[{self.index}]"
+        The check is made again inside the page, at the moment the action runs,
+        because that is when it matters: a scheduled click waits behind the
+        page's own timers — the onchange this tool just fired among them — and
+        a re-render in between moves the index onto another element. Finding
+        it by id afterwards and then acting on the old index pressed exactly
+        that other element.
+        """
+
+        from .activex import js_literal
+
+        return (
+            "(function (d) {"
+            " function txt(e) { var s = [e.innerText, e.value, e.title, e.alt, e.id], i;"
+            " try { i = e.getElementsByTagName('img'); if (i.length) { s.push(i[0].alt, i[0].title); } }"
+            " catch (x) {} return s.join(' ').replace(/\\s+/g, ' '); }"
+            " function ok(e) { if (!e || e.tagName !== T) { return false; }"
+            " var n = e.name; if (typeof n !== 'string') { n = ''; }"
+            " return (e.id || '') === ID && n === NM && (FP === '' || txt(e).indexOf(FP) >= 0); }"
+            f" var T = {js_literal(self.tag)}, ID = {js_literal(self.dom_id)},"
+            f" NM = {js_literal(self.dom_name)}, FP = {js_literal(self.fingerprint)};"
+            f" var e = d.all[{int(self.index)}];"
+            " if (!ok(e) && ID) { e = d.getElementById(ID); }"
+            " return ok(e) ? e : null; })(document)"
+        )
+
+    def guarded(self, body: str, token: str) -> str:
+        """Run ``body`` with ``e`` bound to this element, if it is still there.
+
+        Whether it was found is written to ``document.claudeHandsAck`` before
+        the body runs, because the body may open a modal dialog and not finish.
+        """
+
+        return (
+            f"(function () {{ var e = {self.script_ref()};"
+            f" document.claudeHandsAck = e ? '{token}:ok' : '{token}:miss';"
+            f" if (e) {{ {body} }} }})();"
+        )
 
 
 # --------------------------------------------------------------------------
@@ -315,10 +373,44 @@ class _Locator:
 
 
 FIRE_CHANGE = (
-    "var e = {ref}; if (e.fireEvent) {{ e.fireEvent('onchange'); }} else {{ "
+    "if (e.fireEvent) { e.fireEvent('onchange'); } else { "
     "var ev = document.createEvent('HTMLEvents'); ev.initEvent('change', true, false); "
-    "e.dispatchEvent(ev); }}"
+    "e.dispatchEvent(ev); }"
 )
+
+_tokens = [0]
+
+
+def schedule_guarded(document, locator: "_Locator", body: str, *, wait: float = 0.6) -> None:
+    """Schedule ``body`` on the element and stop if the page could not find it.
+
+    The answer comes back on the page's next turn. If it has not come back
+    within ``wait`` the page is busy — a dialog already open, say — and the
+    action stays scheduled, as a real click would; only a definite "not
+    there" is an error.
+    """
+
+    _tokens[0] += 1
+    token = f"t{_tokens[0]}"
+    schedule_script(document, locator.guarded(body, token))
+    answer: list[str] = []
+
+    def heard() -> bool:
+        try:
+            value = getattr(document, "claudeHandsAck")
+        except Exception:  # noqa: BLE001 - not set yet
+            return False
+        if isinstance(value, str) and value.startswith(token + ":"):
+            answer.append(value)
+            return True
+        return False
+
+    _wait_for(heard, wait)
+    if answer and answer[0].endswith(":miss"):
+        raise PageChangedError(
+            f"페이지가 바뀌어 <{locator.tag.lower()} id={locator.dom_id!r}> 이(가) 그 자리에 없습니다. "
+            "아무것도 누르지 않았습니다. snapshot 을 다시 찍으세요."
+        )
 
 
 def _wait_for(check: Callable[[], bool], timeout: float = 2.0) -> bool:
@@ -341,7 +433,7 @@ class _InvokePattern:
 
     def Invoke(self) -> None:
         document, _element = self._locator.element()
-        schedule_script(document, f"{self._locator.script_ref()}.click()")
+        schedule_guarded(document, self._locator, "e.click();")
 
 
 class _TogglePattern:
@@ -363,7 +455,7 @@ class _TogglePattern:
             raise ClaudeHandsError(
                 "라디오 버튼은 눌러서 끌 수 없습니다. 같은 묶음의 다른 항목을 고르세요."
             )
-        schedule_script(document, f"{self._locator.script_ref()}.click()")
+        schedule_guarded(document, self._locator, "e.click();")
         # The click runs on the page's next turn. Wait for it, so whoever reads
         # the state next reads the new one — and say so if the page refused.
         if not _wait_for(lambda: bool(self._locator.element()[1].checked) != before):
@@ -401,24 +493,39 @@ class _ValuePattern:
             _choose_option(element, value)
         else:
             element.value = value
-        schedule_script(document, FIRE_CHANGE.format(ref=self._locator.script_ref()))
+        schedule_guarded(document, self._locator, FIRE_CHANGE)
 
 
 def _choose_option(select, wanted: str) -> None:
-    """Pick an option by its text, then by its value, then by a partial match."""
+    """Pick an option by its text, then by its value, then by a unique partial match.
+
+    A partial match that fits several options is refused rather than settled
+    on the first: 「결재」 fits 결재대기 and 결재완료 both, and the read-back
+    afterwards would call either one a success.
+    """
 
     options = select.options
     count = int(options.length)
     entries = [(str(options.item(i).text), str(options.item(i).value)) for i in range(count)]
-    for test in (
-        lambda text, value: text == wanted,
-        lambda text, value: value == wanted,
-        lambda text, value: wanted in text,
-    ):
+    if not wanted:
+        raise ClaudeHandsError(
+            "고를 항목이 비어 있습니다. 있는 항목: " + ", ".join(t for t, _ in entries[:20])
+        )
+    for test in (lambda text, value: text == wanted, lambda text, value: value == wanted):
         for index, (text, value) in enumerate(entries):
             if test(text, value):
                 select.selectedIndex = index
                 return
+    partial = [index for index, (text, _value) in enumerate(entries) if wanted in text]
+    if len(partial) == 1:
+        select.selectedIndex = partial[0]
+        return
+    if partial:
+        raise ClaudeHandsError(
+            f"{wanted!r} 에 맞는 항목이 여럿입니다: "
+            + ", ".join(entries[i][0] for i in partial[:20])
+            + ". 보이는 글자 그대로 하나를 고르세요."
+        )
     raise ClaudeHandsError(
         f"{wanted!r} 항목이 목록에 없습니다. 있는 항목: " + ", ".join(t for t, _ in entries[:20])
     )
@@ -555,6 +662,14 @@ class WebElement:
 
     def available_patterns(self) -> tuple[str, ...]:
         return tuple(self._patterns)
+
+    def value(self) -> str:
+        """What a field holds now; read_text(ref=…) on a page element asks this."""
+
+        pattern = self._patterns.get("value")
+        if pattern is None:
+            return ""
+        return pattern.CurrentValue or ""
 
     def to_node_info(self, depth: int = 0) -> NodeInfo:
         locator = self.locator
@@ -720,7 +835,9 @@ def _walk_document(
         (index, parent_index, role, tag, input_type, dom_id, dom_name,
          name, value, state, disabled, readonly, rect_text) = (row + [""] * 13)[:13]
         index, parent_index = int(index), int(parent_index)
-        locator = _Locator(server_hwnd, frames, index, tag, dom_id, dom_name)
+        # An element with nothing else to know it by is also known by its words.
+        fingerprint = name if role in {"button", "hyperlink"} and not dom_id and not dom_name else ""
+        locator = _Locator(server_hwnd, frames, index, tag, dom_id, dom_name, fingerprint)
         rect = _rect(rect_text, origin)
         enabled = disabled != "1"
         patterns: dict[str, Any] = {}
@@ -863,12 +980,17 @@ def build_mshtml_tree(hwnd: int, *, max_nodes: int = 1200):
 
     element_index: dict[int, Any] = {}
     budget = [max_nodes]
-    root_document = document_of(servers[0])
+    # The page the window is about names the root. EnumChildWindows order is
+    # not that: a toolbar strip can come first.
+    main = dominant_ie_server(hwnd) or servers[0]
+    servers = [main] + [server for server in servers if server != main]
+    root_document = document_of(main)
     title = str(root_document.title or "")
+    readers = [_page_text(lambda server=server: document_of(server)) for server in servers]
     root_element = WebElement(
         role="document",
         name=title,
-        patterns={"text": _TextPattern(_page_text(lambda: document_of(servers[0])))},
+        patterns={"text": _TextPattern(lambda: "\n".join(text for text in (r() for r in readers) if text))},
         help_text=f"웹 문서 · 문서 모드 {root_document.documentMode}",
         hwnd=hwnd,
     )

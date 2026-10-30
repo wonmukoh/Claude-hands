@@ -159,15 +159,100 @@ def is_button_class(hwnd: int) -> bool:
     return _class_name(hwnd).lower() == "button"
 
 
-def press_button(hwnd: int) -> None:
-    """Click a Win32 button the way the button itself understands.
+WM_COMMAND = 0x0111
+BM_SETCHECK = 0x00F1
+BN_CLICKED = 0
+GA_ROOT = 2
 
-    ``BM_CLICK`` is handled inside the control, so the click lands with the
-    window minimised, covered and inactive — and, unlike UI Automation's
-    Invoke on the same button, it leaves the foreground where it was.
+
+def _button_style(hwnd: int) -> int:
+    from .defs import user32
+
+    return user32.GetWindowLongW(hwnd, GWL_STYLE) & BS_TYPEMASK
+
+
+def _ensure_pressable(hwnd: int) -> None:
+    """Refuse what a person could not press either.
+
+    The notification below reaches the parent whether or not the button would
+    let itself be clicked: a real click on a disabled button, or on a dialog
+    that a modal box has disabled, does nothing at all.
     """
 
-    _send(hwnd, BM_CLICK)
+    from .defs import user32
+
+    root = user32.GetAncestor(hwnd, GA_ROOT) or hwnd
+    if not user32.IsWindowEnabled(hwnd) or not user32.IsWindowEnabled(root):
+        raise ClaudeHandsError(
+            "비활성 버튼이거나 창이 다른 대화상자에 막혀 있어 누르지 않았습니다. "
+            "떠 있는 대화상자를 먼저 처리하세요."
+        )
+
+
+def _notify_clicked(hwnd: int) -> None:
+    from .defs import user32
+
+    parent = user32.GetParent(hwnd)
+    if not parent:
+        raise ClaudeHandsError("버튼의 부모 창이 없어 누를 수 없습니다.")
+    control_id = user32.GetDlgCtrlID(hwnd) & 0xFFFF
+    _send(parent, WM_COMMAND, (BN_CLICKED << 16) | control_id, hwnd)
+
+
+def press_button(hwnd: int) -> None:
+    """Press a Win32 button by telling its parent it was clicked.
+
+    BM_CLICK was used first and is not enough. It replays a mouse press inside
+    the button, and the button answers a press by taking the keyboard focus —
+    which activates its window. Measured on target_app while visible and
+    inactive: three runs of BM_CLICK on its checkbox, three times the window
+    came to the foreground. WM_COMMAND/BN_CLICKED is the message the button
+    itself sends its parent when clicked, so the program does what a click
+    does, and nothing gets focus.
+    """
+
+    _ensure_pressable(hwnd)
+    style = _button_style(hwnd)
+    if style in TOGGLE_STYLES or style in RADIO_STYLES:
+        toggle_button(hwnd)
+        return
+    _notify_clicked(hwnd)
+
+
+def toggle_button(hwnd: int) -> None:
+    """Change a checkbox or radio button as a click would, without focusing it.
+
+    An *auto* button changes its own state when clicked and then notifies its
+    parent, so both are done here. A plain BS_CHECKBOX or BS_RADIOBUTTON
+    leaves its state to the program, which sets it on the notification.
+    """
+
+    _ensure_pressable(hwnd)
+    style = _button_style(hwnd)
+    state = button_check_state(hwnd)
+    if style == BS_AUTOCHECKBOX:
+        _send(hwnd, BM_SETCHECK, 0 if state else 1)
+    elif style == BS_AUTO3STATE:
+        _send(hwnd, BM_SETCHECK, (state + 1) % 3)
+    elif style == BS_AUTORADIOBUTTON:
+        _check_radio(hwnd)
+    _notify_clicked(hwnd)
+
+
+def _check_radio(hwnd: int) -> None:
+    # What clicking an auto radio button does: it goes on, and the other auto
+    # radio buttons of its group go off.
+    from .defs import user32
+
+    _send(hwnd, BM_SETCHECK, 1)
+    parent = user32.GetParent(hwnd)
+    seen = {hwnd}
+    sibling = user32.GetNextDlgGroupItem(parent, hwnd, False)
+    while sibling and sibling not in seen:
+        seen.add(sibling)
+        if is_button_class(sibling) and _button_style(sibling) == BS_AUTORADIOBUTTON:
+            _send(sibling, BM_SETCHECK, 0)
+        sibling = user32.GetNextDlgGroupItem(parent, sibling, False)
 
 
 def button_check_state(hwnd: int) -> int:
@@ -206,7 +291,7 @@ class _InvokePattern:
         self.hwnd = hwnd
 
     def Invoke(self) -> None:
-        _send(self.hwnd, BM_CLICK)
+        press_button(self.hwnd)
 
 
 class _ValuePattern:
@@ -238,9 +323,9 @@ class _TogglePattern:
         return _send(self.hwnd, BM_GETCHECK)
 
     def Toggle(self) -> None:
-        # BM_SETCHECK moves the box but does not tell the app; BM_CLICK does
-        # both, which is what a user pressing it would produce.
-        _send(self.hwnd, BM_CLICK)
+        # The state and the notification together, as a click produces them —
+        # BM_SETCHECK alone would not tell the program (see press_button).
+        toggle_button(self.hwnd)
 
 
 class Win32Element:
@@ -273,6 +358,13 @@ class Win32Element:
     def refresh(self) -> "Win32Element":
         self._rect = self._name = self._enabled = None
         return self
+
+    def is_alive(self) -> bool:
+        # The memoised properties outlive the window, and GetWindowLong on a
+        # dead handle reads as "not disabled" — only IsWindow can say.
+        from .defs import user32
+
+        return bool(user32.IsWindow(self.hwnd))
 
     @property
     def role(self) -> str:

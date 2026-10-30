@@ -19,7 +19,6 @@ from .defs import (
     SM_CYVIRTUALSCREEN,
     SM_XVIRTUALSCREEN,
     SM_YVIRTUALSCREEN,
-    SW_MINIMIZE,
     SW_RESTORE,
     SW_SHOWMAXIMIZED,
     SW_SHOWNOACTIVATE,
@@ -421,10 +420,28 @@ def show_without_activating(hwnd: int) -> None:
 
 
 def minimize(hwnd: int) -> None:
+    """Minimise without activating anything.
+
+    SW_MINIMIZE activates the next window in the z-order, which is a window
+    the user did not pick. SW_SHOWMINNOACTIVE leaves the foreground alone.
+    """
+
+    require_windows()
+    from .defs import SW_SHOWMINNOACTIVE, user32
+
+    user32.ShowWindow(hwnd, SW_SHOWMINNOACTIVE)
+
+
+def is_hung(hwnd: int) -> bool:
+    """Whether Windows considers the window's thread unresponsive ("응답 없음")."""
+
     require_windows()
     from .defs import user32
 
-    user32.ShowWindow(hwnd, SW_MINIMIZE)
+    try:
+        return bool(user32.IsHungAppWindow(hwnd))
+    except Exception:  # noqa: BLE001 - an old user32 without it
+        return False
 
 
 def restore(hwnd: int, *, activate: bool = False) -> None:
@@ -521,10 +538,22 @@ def get_placement(hwnd: int):
 
 
 def set_placement(hwnd: int, placement) -> None:
-    require_windows()
-    from .defs import user32
+    """Put a window back where a placement says, without activating it.
 
-    user32.SetWindowPlacement(hwnd, ctypes.byref(placement))
+    A placement read from a minimised window says SW_SHOWMINIMIZED, which
+    activates the window as it goes back — so putting back a window this tool
+    had briefly restored could hand it the foreground. The no-activate form
+    of each state is used instead.
+    """
+
+    require_windows()
+    from .defs import SW_SHOWMINNOACTIVE, user32
+
+    quiet = {2: SW_SHOWMINNOACTIVE, 1: SW_SHOWNOACTIVATE, 9: SW_SHOWNOACTIVATE}
+    copy = type(placement)()
+    ctypes.memmove(ctypes.byref(copy), ctypes.byref(placement), ctypes.sizeof(placement))
+    copy.showCmd = quiet.get(int(copy.showCmd), int(copy.showCmd))
+    user32.SetWindowPlacement(hwnd, ctypes.byref(copy))
 
 
 def deepest_child_at(hwnd: int, screen_x: int, screen_y: int) -> int:

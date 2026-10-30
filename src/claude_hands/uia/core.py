@@ -18,7 +18,7 @@ import queue
 import re
 import sys
 import threading
-from concurrent.futures import Future
+from concurrent.futures import Future, TimeoutError as FutureTimeoutError
 from typing import Any, Callable, Optional, TypeVar
 
 from ..win32.defs import ClaudeHandsError, enable_dpi_awareness, require_windows
@@ -29,6 +29,15 @@ T = TypeVar("T")
 
 class UiaUnavailableError(ClaudeHandsError):
     """Raised when the UI Automation stack cannot be initialised."""
+
+
+class WorkerTimeoutError(ClaudeHandsError):
+    """A call was handed to a COM worker and did not come back in time.
+
+    The call is not cancelled — nothing can cancel a COM call in flight — so
+    it may still land. Whoever catches this must not try another way of doing
+    the same thing: that is how one click becomes two.
+    """
 
 
 # COM apartment bookkeeping
@@ -218,7 +227,22 @@ class UiaWorker:
         return future
 
     def call(self, func: Callable[..., T], *args: Any, timeout: float = 60.0, **kwargs: Any) -> T:
-        return self.submit(func, *args, **kwargs).result(timeout=timeout)
+        if threading.current_thread() is self._thread:
+            # Already on this worker: queueing would wait on ourselves until
+            # the timeout. Helpers that may be reached either way (the web
+            # engine's page measure) call through here.
+            return func(*args, **kwargs)
+        try:
+            return self.submit(func, *args, **kwargs).result(timeout=timeout)
+        except FutureTimeoutError as exc:
+            # A bare TimeoutError reached the MCP client as an empty message,
+            # and the action chains took it for a refusal and tried the next
+            # route while the first was still running.
+            raise WorkerTimeoutError(
+                f"대상 프로그램이 {timeout:g}초 안에 답하지 않았습니다. 프로그램이 바쁘거나 "
+                "대화상자가 떠 있을 수 있습니다. 요청은 취소되지 않았으니 결과가 늦게 반영될 수 "
+                "있습니다 — 다시 시도하기 전에 snapshot 으로 상태를 확인하세요."
+            ) from exc
 
     def close(self) -> None:
         self._put(self._stop)
@@ -609,6 +633,22 @@ class UiaElement:
         if not raw:
             return ()
         return tuple(int(v) for v in raw)
+
+    def is_alive(self) -> bool:
+        """Whether the element still exists, asked of the live UI.
+
+        Every other property here is memoised or read from the cache, and a
+        dead element answers those with the old value — so a ref to a closed
+        dialog's button looked alive, fell through to a coordinate click, and
+        pressed whatever had taken its place. Must run on the UIA worker.
+        """
+
+        ensure_com()
+        try:
+            self.com.CurrentProcessId
+            return True
+        except Exception:  # noqa: BLE001 - UIA_E_ELEMENTNOTAVAILABLE and kin
+            return False
 
     def refresh(self) -> "UiaElement":
         """Drop memoised property values so the next read hits the live UI."""

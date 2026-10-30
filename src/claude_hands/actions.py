@@ -22,7 +22,8 @@ from dataclasses import dataclass, field
 from typing import Any, Optional
 
 from .elements import NodeInfo
-from .session import WindowSession
+from .session import RefNotFoundError, WindowSession
+from .uia.core import WorkerTimeoutError
 from .win32.defs import ClaudeHandsError
 from .win32.input import (
     click_at_screen_point,
@@ -33,7 +34,13 @@ from .win32.input import (
     send_text_chars,
     set_window_text,
 )
-from .win32.controls import button_check_state, is_button_class, press_button
+from .win32.controls import (
+    button_check_state,
+    control_text,
+    is_button_class,
+    press_button,
+    toggle_button,
+)
 from .win32.windows import Rect, deepest_child_at
 
 
@@ -119,7 +126,7 @@ def _engine(element) -> str:
     return getattr(element, "engine", "uia")
 
 
-def _call(element, func, *args, **kwargs):
+def _call(element, func, *args, _timeout: float | None = None, **kwargs):
     """Run one backend call on the thread that backend needs.
 
     UI Automation calls are marshalled to the COM worker. Window-message calls
@@ -135,10 +142,14 @@ def _call(element, func, *args, **kwargs):
         # IE's objects only work from the apartment kind they were fetched in.
         from .uia.core import get_sta_worker
 
+        if _timeout is not None:
+            return get_sta_worker().call(func, *args, timeout=_timeout, **kwargs)
         return get_sta_worker().call(func, *args, **kwargs)
 
     from .uia.core import get_worker
 
+    if _timeout is not None:
+        return get_worker().call(func, *args, timeout=_timeout, **kwargs)
     return get_worker().call(func, *args, **kwargs)
 
 
@@ -175,9 +186,9 @@ def click(
     simple_left = button == "left" and not double and not modifiers
     native = _win32_button(element, node)
     if simple_left and not force_message and native:
-        attempts.append("message:BM_CLICK")
+        attempts.append("message:BN_CLICKED")
         press_button(native)
-        return ActionResult(True, "click", "message:BM_CLICK", label, attempts=attempts)
+        return ActionResult(True, "click", "message:BN_CLICKED", label, attempts=attempts)
 
     if simple_left and not force_message:
         for strategy, runner in _click_pattern_chain(element, node):
@@ -185,10 +196,22 @@ def click(
             try:
                 _call(element, runner)
                 return ActionResult(True, "click", strategy, label, attempts=attempts)
+            except CHAIN_STOPPERS:
+                raise
             except Exception as exc:  # noqa: BLE001 - try the next strategy
                 attempts[-1] = f"{strategy}(실패: {_short(exc)})"
 
-    if button == "right" and not force_message:
+        if attempts and _engine(element) == "mshtml":
+            # The page itself said no. A coordinate click would land on the
+            # spot the element held at snapshot time, which after a re-render
+            # can be another button entirely — 결재올림 included.
+            raise ActionFailedError(
+                f"{label} 을(를) 페이지 안에서 누르지 못했습니다.\n"
+                "시도한 방법: " + " → ".join(attempts) + "\n"
+                "snapshot 을 다시 찍어 지금 화면의 ref 로 누르세요."
+            )
+
+    if button == "right" and not force_message and _engine(element) == "uia":
         context_label = f"{_engine(element)}:context-menu"
         attempts.append(context_label)
         try:
@@ -305,6 +328,21 @@ def _refuse_user_only(
         )
 
 
+class ReadOnlyFieldError(ActionFailedError):
+    """The control says it cannot be written. Nothing tries another way."""
+
+
+CHAIN_STOPPERS = (UserOnlyActionError, ReadOnlyFieldError, RefNotFoundError, WorkerTimeoutError)
+"""Failures that end a strategy chain instead of moving it to the next rung.
+
+The chains exist for controls that refuse one way of being driven and accept
+another. These are not that: a button the user keeps for themselves, a field
+that says it is read-only (WM_SETTEXT would overwrite it anyway), an element
+that is no longer where it was, and a call that is still running after its
+time ran out — trying the next route there presses the same control twice.
+"""
+
+
 def _inside_pressable(element) -> bool:
     # Only the web engine knows where a piece of text sits; anywhere else,
     # text is assumed to be a caption, which is the cautious answer.
@@ -317,10 +355,10 @@ def _win32_button(element, node: NodeInfo) -> int:
     UI Automation's proxy for these activates the window when it invokes or
     toggles them. Measured with the user's Acrobat in front: `uia:toggle` on a
     plain checkbox brought its window to the foreground, and `uia:invoke` on a
-    message box's 확인 handed the foreground to the box. The same buttons
-    pressed with BM_CLICK left the foreground alone. These are the most common
-    controls there are — every message box is made of them — so they go
-    through the button's own message first.
+    message box's 확인 handed the foreground to the box. These are the most
+    common controls there are — every message box is made of them — so they
+    go through the button's own notification instead (see press_button: not
+    BM_CLICK, which was tried first and does the same thing).
     """
 
     if _engine(element) != "uia" or not node.hwnd:
@@ -369,7 +407,7 @@ def _click_pattern_chain(element, node: NodeInfo):
             chain.append((f"{engine}:expand", lambda: _toggle_expand(expand)))
 
     selection = element.pattern("selectionitem")
-    if selection is not None and not any(name == "uia:select" for name, _ in chain):
+    if selection is not None and not any(name == f"{engine}:select" for name, _ in chain):
         chain.append((f"{engine}:select", lambda: selection.Select()))
 
     legacy = element.pattern("legacy")
@@ -423,6 +461,71 @@ it in, so the fallbacks that work that way are not offered.
 """
 
 
+def _landed(actual: str, expected: str, before: str | None) -> bool:
+    """Whether text read back after a write shows the write took (lesson 24)."""
+
+    if actual == expected:
+        return True
+    if not expected:
+        return not actual.strip()
+    if not actual:
+        # Nothing came back where something was just written. An empty
+        # string is "in" every string, so a plain containment test calls
+        # this a success — which is how a button reported 입력 완료.
+        return False
+    # Controls reformat what they are given — trimming, padding a number,
+    # truncating at a maximum length — so containment rather than equality.
+    if expected in actual:
+        return True
+    # Shorter than what was written is a truncation only if it changed:
+    # appending "def" to "abc" that never landed reads back "abc", which
+    # is "in" "abcdef" too.
+    return actual in expected and actual != before
+
+
+ES_PASSWORD = 0x0020
+ES_READONLY = 0x0800
+EDIT_CLASSES = ("edit", "richedit")
+
+
+def _win32_edit(element, node: NodeInfo) -> int:
+    """The HWND of a classic Win32 edit box behind a UIA element, or 0.
+
+    Same story as `_win32_button`: UI Automation's SetValue on these brought
+    the window to the foreground — measured on target_app while visible and
+    inactive, 「입력란」 took the foreground from the Claude app. WM_SETTEXT
+    sets the same text with no focus involved, and the edit control still
+    tells its parent (EN_CHANGE).
+    """
+
+    if _engine(element) != "uia" or not node.hwnd or node.role not in {"edit", "document"}:
+        return 0
+    if not (node.class_name or "").lower().startswith(EDIT_CLASSES):
+        return 0
+    return node.hwnd
+
+
+def _type_into_edit(hwnd: int, label: str, text: str, *, clear: bool, submit: bool) -> ActionResult:
+    from .win32.defs import GWL_STYLE, user32
+
+    style = user32.GetWindowLongW(hwnd, GWL_STYLE)
+    if style & ES_READONLY:
+        raise ReadOnlyFieldError(f"{label} 은(는) 읽기 전용 필드라 입력하지 않았습니다.")
+    before = control_text(hwnd)
+    new_text = text if clear else before + text
+    if not set_window_text(hwnd, new_text):
+        raise ActionFailedError(f"{label} 에 창 메시지로 입력하지 못했습니다.")
+    # Another process's password box answers WM_GETTEXT with nothing.
+    if not style & ES_PASSWORD and not _landed(control_text(hwnd), new_text, before):
+        raise ActionFailedError(f"{label} 에 쓴 값이 반영되지 않았습니다.")
+    if submit:
+        send_keys(hwnd, "enter")
+    return ActionResult(
+        True, "type", "message:WM_SETTEXT", label,
+        detail=f"{len(new_text)}자 입력", attempts=["message:WM_SETTEXT"],
+    )
+
+
 def type_text(
     session: WindowSession,
     ref: str,
@@ -454,8 +557,30 @@ def type_text(
         raise ActionFailedError(f"{label} 은(는) 비활성 상태라 입력할 수 없습니다.")
 
     engine = _engine(element)
+    if submit and (engine == "mshtml" or not node.hwnd):
+        # Enter goes to a window, not an element. Without a window of its own
+        # this field's Enter lands on the dialog or page around it, where it
+        # presses the default button — which may be 발송 — and nothing here
+        # could refuse that.
+        raise ActionFailedError(
+            f"{label} 은(는) 자기 창이 없어 submit 의 Enter 가 창 전체로 갑니다 — 기본 버튼이 "
+            "눌릴 수 있습니다. submit 없이 입력한 뒤, 누를 버튼을 click_element 로 누르세요."
+        )
 
-    def took(pattern, expected: str) -> bool:
+    native_edit = _win32_edit(element, node)
+    if native_edit:
+        return _type_into_edit(native_edit, label, text, clear=clear, submit=submit)
+
+    def current(pattern):
+        try:
+            value = _call(element, lambda: pattern.CurrentValue)
+        except CHAIN_STOPPERS:
+            raise
+        except Exception:  # noqa: BLE001 - no readback available
+            return None
+        return None if value is None else str(value)
+
+    def took(pattern, expected: str, before: str | None = None) -> bool:
         """Did the write land, as far as the control will say?
 
         A set that returns without raising has not necessarily done anything —
@@ -468,21 +593,10 @@ def type_text(
         failure would break the ones that work.
         """
 
-        try:
-            actual = _call(element, lambda: pattern.CurrentValue)
-        except Exception:  # noqa: BLE001 - no readback available
-            return True
+        actual = current(pattern)
         if actual is None:
             return True
-        actual = str(actual)
-        if expected and not actual:
-            # Nothing came back where something was just written. An empty
-            # string is "in" every string, so a plain containment test calls
-            # this a success — which is how a button reported 입력 완료.
-            return False
-        # Controls reformat what they are given — trimming, padding a number,
-        # truncating at a maximum length — so containment rather than equality.
-        return expected in actual or actual in expected
+        return _landed(actual, expected, before)
 
     value_pattern = element.pattern("value")
     if value_pattern is not None:
@@ -492,13 +606,17 @@ def type_text(
             is_readonly = False
             try:
                 is_readonly = bool(_call(element, lambda: value_pattern.CurrentIsReadOnly))
+            except CHAIN_STOPPERS:
+                raise
             except Exception:  # noqa: BLE001 - property missing on some apps
                 is_readonly = False
             if is_readonly:
-                raise ActionFailedError("읽기 전용 필드입니다.")
-            new_text = text if clear else (node.value or "") + text
+                raise ReadOnlyFieldError(f"{label} 은(는) 읽기 전용 필드라 입력하지 않았습니다.")
+            before = current(value_pattern)
+            # Append to what is there now, not to what the snapshot saw.
+            new_text = text if clear else (before if before is not None else node.value or "") + text
             _call(element, lambda: value_pattern.SetValue(new_text))
-            if not took(value_pattern, new_text):
+            if not took(value_pattern, new_text, before):
                 raise ActionFailedError("값이 반영되지 않았습니다.")
             if submit:
                 send_keys(_owning_hwnd(session, node), "enter")
@@ -506,6 +624,8 @@ def type_text(
                 True, "type", set_value_label, label,
                 detail=f"{len(new_text)}자 입력", attempts=attempts,
             )
+        except CHAIN_STOPPERS:
+            raise
         except Exception as exc:  # noqa: BLE001
             attempts[-1] = f"{set_value_label}(실패: {_short(exc)})"
 
@@ -514,9 +634,10 @@ def type_text(
         legacy_label = f"{engine}:legacy.SetValue"
         attempts.append(legacy_label)
         try:
-            new_text = text if clear else (node.value or "") + text
+            before = current(legacy)
+            new_text = text if clear else (before if before is not None else node.value or "") + text
             _call(element, lambda: legacy.SetValue(new_text))
-            if not took(legacy, new_text):
+            if not took(legacy, new_text, before):
                 raise ActionFailedError("값이 반영되지 않았습니다.")
             if submit:
                 send_keys(_owning_hwnd(session, node), "enter")
@@ -524,6 +645,8 @@ def type_text(
                 True, "type", legacy_label, label,
                 detail=f"{len(new_text)}자 입력", attempts=attempts,
             )
+        except CHAIN_STOPPERS:
+            raise
         except Exception as exc:  # noqa: BLE001
             attempts[-1] = f"{legacy_label}(실패: {_short(exc)})"
 
@@ -631,6 +754,14 @@ def press_keys(
     label = "창"
     if ref:
         node, _element = session.resolve(ref)
+        if _engine(_element) == "mshtml":
+            # The keys go to the IE window, and inside the page to whatever has
+            # focus — not to the element this ref names, so refusing by its
+            # name would check the wrong thing.
+            raise ActionFailedError(
+                "웹 화면에서는 키가 이 요소가 아니라 페이지에서 포커스를 가진 곳으로 갑니다. "
+                "입력은 type_text, 누르기는 click_element 를 쓰세요."
+            )
         # Enter on a focused link presses it as surely as a click does.
         _refuse_user_only(node.name, node.automation_id, node.role, _inside_pressable(_element))
         target_hwnd = _owning_hwnd(session, node)
@@ -740,7 +871,7 @@ def scroll(
                 detail=f"{direction} × {amount}", attempts=attempts,
             )
         except Exception as exc:  # noqa: BLE001
-            attempts[-1] = f"uia:scroll(실패: {_short(exc)})"
+            attempts[-1] = f"{_engine(element)}:scroll(실패: {_short(exc)})"
 
     attempts.append("message:wheel")
     x, y = _element_point(element, node)
@@ -802,6 +933,7 @@ def scroll_into_view(session: WindowSession, ref: str, *, quiet: bool = False) -
 def select(session: WindowSession, ref: str, *, add: bool = False) -> ActionResult:
     node, element = session.resolve(ref)
     label = _target_label(node)
+    _refuse_user_only(node.name, node.automation_id, node.role, _inside_pressable(element))
     pattern = element.pattern("selectionitem")
     if pattern is None:
         return click(session, ref)
@@ -815,9 +947,11 @@ def select(session: WindowSession, ref: str, *, add: bool = False) -> ActionResu
 def toggle(session: WindowSession, ref: str, *, to: bool | None = None) -> ActionResult:
     node, element = session.resolve(ref)
     label = _target_label(node)
-    native = _win32_button(element, node)
+    # check/uncheck on a push button is a press like any other.
+    _refuse_user_only(node.name, node.automation_id, node.role, _inside_pressable(element))
+    native = _win32_button(element, node) if node.role in {"checkbox", "radiobutton"} else 0
     if native:
-        return _toggle_button(native, label, to)
+        return _toggle_button(native, label, to, radio=node.role == "radiobutton")
     pattern = element.pattern("toggle")
     if pattern is None:
         return click(session, ref)
@@ -829,50 +963,70 @@ def toggle(session: WindowSession, ref: str, *, to: bool | None = None) -> Actio
                 return ActionResult(
                     True, "toggle", "noop", label, detail=f"이미 {'켜짐' if to else '꺼짐'} 상태"
                 )
+            _refuse_radio_off(node.role == "radiobutton", want, label)
             for _ in range(3):
                 _call(element, lambda: pattern.Toggle())
                 if int(_call(element, lambda: pattern.CurrentToggleState)) == want:
                     break
         else:
+            want = None
             _call(element, lambda: pattern.Toggle())
         state = _call(element, lambda: int(pattern.CurrentToggleState))
-        from .uia.core import TOGGLE_STATES
-
-        return ActionResult(
-            True, "toggle", f"{_engine(element)}:toggle", label, detail=f"현재 상태: {TOGGLE_STATES.get(state, state)}"
-        )
+    except ClaudeHandsError:
+        raise
     except Exception as exc:  # noqa: BLE001
         raise ActionFailedError(f"{label} 토글 실패: {_short(exc)}") from exc
+    return _toggled(f"{_engine(element)}:toggle", label, state, want)
 
 
-def _toggle_button(hwnd: int, label: str, to: bool | None) -> ActionResult:
-    """Toggle a Win32 checkbox or radio button without activating its window."""
+def _refuse_radio_off(radio: bool, want: int, label: str) -> None:
+    if radio and want == 0:
+        # Pressing a selected radio button leaves it selected, so the loop
+        # would press it three times — running its handler three times — and
+        # still not get there.
+        raise ActionFailedError(
+            f"{label} 은(는) 라디오 버튼이라 눌러서 끌 수 없습니다. 같은 묶음의 다른 항목을 켜세요."
+        )
 
+
+def _toggled(strategy: str, label: str, state: int, want: int | None) -> ActionResult:
     from .uia.core import TOGGLE_STATES
 
+    shown = TOGGLE_STATES.get(state, state)
+    if want is not None and state != want:
+        raise ActionFailedError(
+            f"{label} 을(를) 눌렀지만 원하는 상태가 되지 않았습니다 (현재 상태: {shown}). "
+            "프로그램이 바꾸지 못하게 막았거나 대화상자가 떠 있을 수 있습니다."
+        )
+    return ActionResult(True, "toggle", strategy, label, detail=f"현재 상태: {shown}")
+
+
+def _toggle_button(hwnd: int, label: str, to: bool | None, *, radio: bool = False) -> ActionResult:
+    """Toggle a Win32 checkbox or radio button without activating its window."""
+
     current = button_check_state(hwnd)
+    want = None
     if to is not None:
         want = 1 if to else 0
         if current == want:
             return ActionResult(
                 True, "toggle", "noop", label, detail=f"이미 {'켜짐' if to else '꺼짐'} 상태"
             )
+        _refuse_radio_off(radio, want, label)
         # A three-state box passes through "indeterminate" on the way.
         for _ in range(3):
-            press_button(hwnd)
+            toggle_button(hwnd)
             if button_check_state(hwnd) == want:
                 break
     else:
-        press_button(hwnd)
-    state = button_check_state(hwnd)
-    return ActionResult(
-        True, "toggle", "message:BM_CLICK", label, detail=f"현재 상태: {TOGGLE_STATES.get(state, state)}"
-    )
+        toggle_button(hwnd)
+    return _toggled("message:BN_CLICKED", label, button_check_state(hwnd), want)
 
 
 def expand(session: WindowSession, ref: str, *, collapse: bool = False) -> ActionResult:
     node, element = session.resolve(ref)
     label = _target_label(node)
+    _refuse_user_only(node.name, node.automation_id, node.role, _inside_pressable(element))
     pattern = element.pattern("expandcollapse")
     if pattern is None:
         return click(session, ref)
@@ -911,9 +1065,11 @@ def get_text(session: WindowSession, ref: str | None = None, *, max_chars: int =
         except Exception:  # noqa: BLE001 - fall through to simpler reads
             pass
 
-    value = element.value()
+    # Through the element's own thread: a 한글 field reads over COM.
+    reader = getattr(element, "value", None)
+    value = _call(element, reader) if callable(reader) else ""
     if value:
-        return value
+        return str(value)[:max_chars]
 
     # A container's own name is its title, not its contents, and the title is
     # almost never what someone reading a window wanted: an Office document
@@ -999,6 +1155,9 @@ def wait_for(
     )
 
 
+MENU_MATCH_FLOOR = 0.85
+
+
 def menu_select(session: WindowSession, path: str, *, separator: str = ">") -> ActionResult:
     """Walk a menu by name, e.g. ``"파일 > 다른 이름으로 저장"``.
 
@@ -1036,13 +1195,15 @@ def menu_select(session: WindowSession, path: str, *, separator: str = ">") -> A
     walked: list[str] = []
     for index, step in enumerate(steps):
         matches = session.find(step, limit=8)
+        # A fuzzy best match is not good enough to press: 「저장」 could find
+        # 「임시저장」 first and press it. Only near-exact names of things that
+        # are menus or buttons count.
         candidates = [
             node
-            for _score, node in matches
-            if node.role in {"menuitem", "menubar", "menu", "button", "splitbutton", "listitem"}
+            for score, node in matches
+            if score >= MENU_MATCH_FLOOR
+            and node.role in {"menuitem", "menubar", "menu", "button", "splitbutton", "listitem"}
         ]
-        if not candidates:
-            candidates = [node for _score, node in matches]
         if not candidates:
             raise ActionFailedError(
                 f"메뉴 항목 {step!r} 을(를) 찾지 못했습니다. 이미 지나온 경로: {' > '.join(walked) or '(없음)'}"
@@ -1155,7 +1316,9 @@ def call_control(
     strategy = f"{_engine(element)}:control.{method}"
 
     started = time.time()
-    value = _call(element, lambda: pattern.Call(method, spec, checked, timeout))
+    # The worker must wait at least as long as the call may take, or it gives
+    # up first and reports a save that is still going as failed.
+    value = _call(element, lambda: pattern.Call(method, spec, checked, timeout), _timeout=timeout + 15)
     result = ActionResult(True, "call", strategy, label, value=value)
 
     if spec.path_out is not None:
@@ -1179,7 +1342,10 @@ def call_control(
         # Writing into a 누름틀 that does not exist succeeds silently (lesson 24),
         # so the fields are read back.
         read_spec = lookup(control, "GetFieldText")
-        actual = _call(element, lambda: pattern.Call("GetFieldText", read_spec, checked[:1], timeout))
+        actual = _call(
+            element, lambda: pattern.Call("GetFieldText", read_spec, checked[:1], timeout),
+            _timeout=timeout + 15,
+        )
         wanted = _field_parts(checked[1] if len(checked) > 1 else "")
         if _field_parts(actual) != wanted:
             result.ok = False

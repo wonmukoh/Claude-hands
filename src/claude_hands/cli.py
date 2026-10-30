@@ -27,10 +27,20 @@ def _attach(args):
     )
 
 
+QUERY_FLOOR = 0.85
+
+
 def _resolve_ref(window, args) -> str:
     """Accept either an explicit --ref or a --query to search for."""
 
     if getattr(args, "ref", None):
+        # Each command is its own process, so its refs are numbered afresh: the
+        # e3 an earlier `snapshot` printed is whatever is e3 now (lesson 16).
+        print(
+            "주의: --ref 는 이 명령이 새로 찍은 스냅샷의 번호입니다. 앞서 본 번호와 다를 수 "
+            "있으니 --query 를 권합니다.",
+            file=sys.stderr,
+        )
         return args.ref
     query = getattr(args, "query", None)
     if not query:
@@ -39,6 +49,12 @@ def _resolve_ref(window, args) -> str:
     if not matches:
         raise ClaudeHandsError(f"{query!r} 와(과) 일치하는 요소를 찾지 못했습니다.")
     score, node = matches[0]
+    if score < QUERY_FLOOR:
+        # A weak best match is a guess, and the command would act on it.
+        raise ClaudeHandsError(
+            f"{query!r} 와(과) 확실히 맞는 요소가 없습니다. 가장 가까운 것: "
+            f"{format_node_line(node)} (일치도 {score:.2f}). 이름을 더 정확히 주세요."
+        )
     print(f"→ 선택: {format_node_line(node)} (일치도 {score:.2f})", file=sys.stderr)
     return node.ref
 

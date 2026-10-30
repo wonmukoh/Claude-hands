@@ -65,6 +65,9 @@ box = app.find("TextBox 4", role="edit")[0]
 app.type(box.ref, "최소화 상태에서 쓴 문장")   # office:value.SetValue
 ```
 
+일반 Win32 버튼·체크칸·입력란은 어느 엔진으로 붙든 창 메시지(`BN_CLICKED`·`WM_SETTEXT`)로
+다룹니다. UI Automation 으로 누르거나 쓰면 그 창이 앞으로 나오는 것을 실측했기 때문입니다.
+
 `mshtml` 엔진은 IE 웹 컨트롤이 내주는 문서 객체(`WM_HTML_GETOBJECT`)에 붙습니다.
 UIA 로는 옛 방식 페이지의 체크칸이 상태 없는 글자로 나오기 때문입니다. 클릭은
 페이지 안에서 예약해 바로 돌아오므로, 눌린 처리기가 모달 창을 띄워도 도구가

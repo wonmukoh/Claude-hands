@@ -105,12 +105,41 @@ def _fail(exc: BaseException) -> str:
     return f"오류: {exc}"
 
 
+def _tool():
+    """``mcp.tool()`` with a last net under every tool.
+
+    Each tool turns this package's own errors into a sentence. Anything else —
+    a raw COM error, a timeout from a worker — used to reach the client as a
+    bare traceback or an empty message, which a caller cannot act on.
+    """
+
+    import functools
+
+    def register(func):
+        @functools.wraps(func)
+        async def guarded(*args, **kwargs):
+            try:
+                return await func(*args, **kwargs)
+            except ClaudeHandsError as exc:
+                return _fail(exc)
+            except Exception as exc:  # noqa: BLE001 - the net, see above
+                return (
+                    f"오류: 예상하지 못한 문제로 {func.__name__} 를 마치지 못했습니다 "
+                    f"({type(exc).__name__}: {exc}). 대상 프로그램이 바쁘거나 창이 바뀌었을 수 "
+                    "있습니다. snapshot 으로 지금 상태를 확인한 뒤 다시 시도하세요."
+                )
+
+        return mcp.tool()(guarded)
+
+    return register
+
+
 # --------------------------------------------------------------------------
 # Discovery
 # --------------------------------------------------------------------------
 
 
-@mcp.tool()
+@_tool()
 async def list_windows(
     title_contains: str | None = None,
     process: str | None = None,
@@ -153,7 +182,7 @@ async def list_windows(
     return "\n".join(lines)
 
 
-@mcp.tool()
+@_tool()
 async def attach_window(
     hwnd: int | None = None,
     title: str | None = None,
@@ -235,7 +264,7 @@ def _has_web_area(hwnd: int) -> bool:
         return False
 
 
-@mcp.tool()
+@_tool()
 async def detach_window(hwnd: int | None = None) -> str:
     """연결을 해제합니다 (창 자체는 그대로 둡니다)."""
 
@@ -248,7 +277,7 @@ async def detach_window(hwnd: int | None = None) -> str:
 # --------------------------------------------------------------------------
 
 
-@mcp.tool()
+@_tool()
 async def snapshot(
     hwnd: int | None = None,
     interactive_only: bool = False,
@@ -294,7 +323,7 @@ async def snapshot(
         return _fail(exc)
 
 
-@mcp.tool()
+@_tool()
 async def find_elements(
     query: str,
     role: str | None = None,
@@ -334,7 +363,7 @@ async def find_elements(
     return "\n".join(lines)
 
 
-@mcp.tool()
+@_tool()
 async def read_text(ref: str | None = None, hwnd: int | None = None, max_chars: int = 8000) -> str:
     """요소(또는 창 전체)의 텍스트를 읽습니다. 문서/편집기 내용 읽기에 씁니다."""
 
@@ -346,7 +375,7 @@ async def read_text(ref: str | None = None, hwnd: int | None = None, max_chars: 
     return text or "(읽을 수 있는 텍스트가 없습니다.)"
 
 
-@mcp.tool()
+@_tool()
 async def screenshot_window(
     hwnd: int | None = None,
     ref: str | None = None,
@@ -355,8 +384,9 @@ async def screenshot_window(
 ) -> Any:
     """창(또는 한 요소)의 픽셀을 캡처합니다. 다른 창에 가려져 있어도 실제 내용이 찍힙니다.
 
-    최소화된 창은 픽셀이 존재하지 않으므로, restore_if_minimized 가 True 면 화면
-    바깥에서 잠깐 복원했다가 원래 상태로 되돌려 캡처합니다(사용자 포커스는 그대로).
+    최소화된 창은 픽셀이 존재하지 않으므로, restore_if_minimized 가 True 면 활성화하지
+    않고 다른 창들 뒤에서 잠깐 복원했다가 원래 상태로 되돌려 캡처합니다(사용자 포커스는
+    그대로). 응답 없는 창은 캡처하지 않습니다.
 
     돌아오는 것은 이미지뿐이라 조작에 쓸 ref 가 없습니다.
 
@@ -372,18 +402,27 @@ async def screenshot_window(
         capture = await _run(
             capture_window, session.hwnd, restore_if_minimized=restore_if_minimized
         )
+        notes: list[str] = []
         if ref:
             node, _element = await _run(session.resolve, ref)
             # Cropping needs screen pixels. A document rectangle would cut some
             # unrelated corner of the window and look like a real answer, so
             # the whole window comes back instead.
-            if node.rect and node.rect_space == "screen":
+            if capture.restored_offscreen:
+                # The element's rectangle was read while the window sat
+                # minimised at -32000; the pixels come from where it was
+                # briefly restored. Cropping one with the other cuts the
+                # wrong place or fails, so the whole window is sent instead.
+                notes.append("창이 최소화되어 있어 요소 위치를 알 수 없으므로 창 전체를 보냅니다.")
+            elif node.rect and node.rect_space == "screen":
                 capture = capture.crop(node.rect)
         png = await _run(capture.to_png, max_side=max_side)
         web = await _run(_has_web_area, session.hwnd)
     except ClaudeHandsError as exc:
         return _fail(exc)
     image = Image(data=png, format="png")
+    if notes and not web:
+        return [*notes, image]
     if web:
         # IE paints its page on the GPU, and PrintWindow does not see that
         # surface even with PW_RENDERFULLCONTENT — measured: the page area
@@ -391,6 +430,7 @@ async def screenshot_window(
         # picture is not wrong about the frame, only silent about the page,
         # so it is returned with that said.
         return [
+            *notes,
             "이 창의 IE 웹 영역은 캡처에 비어 보입니다(IE 가 GPU 로 그려 창 캡처에 잡히지 "
             "않습니다). 페이지 내용은 snapshot / read_text 로 읽으세요.",
             image,
@@ -403,7 +443,7 @@ async def screenshot_window(
 # --------------------------------------------------------------------------
 
 
-@mcp.tool()
+@_tool()
 async def click_element(
     ref: str,
     button: str = "left",
@@ -439,7 +479,7 @@ async def click_element(
     return result.describe()
 
 
-@mcp.tool()
+@_tool()
 async def type_text(
     ref: str,
     text: str,
@@ -486,7 +526,7 @@ async def type_text(
     return result.describe()
 
 
-@mcp.tool()
+@_tool()
 async def press_keys(
     keys: str,
     ref: str | None = None,
@@ -518,7 +558,7 @@ async def press_keys(
     return result.describe()
 
 
-@mcp.tool()
+@_tool()
 async def scroll(
     direction: str = "down",
     amount: int = 3,
@@ -552,7 +592,7 @@ async def scroll(
     return result.describe()
 
 
-@mcp.tool()
+@_tool()
 async def set_element_state(
     ref: str,
     action: Literal[
@@ -603,7 +643,7 @@ async def set_element_state(
     return result.describe()
 
 
-@mcp.tool()
+@_tool()
 async def call_control_method(
     method: str,
     args: list[str | int | float | bool | None] | None = None,
@@ -666,7 +706,7 @@ def _format_value(value: Any, max_chars: int) -> str:
     return f"\n값:\n{value}" if "\n" in value else f"\n값: {value}"
 
 
-@mcp.tool()
+@_tool()
 async def menu_select(path: str, hwnd: int | None = None) -> str:
     """메뉴를 이름으로 따라 들어갑니다. 예: "파일 > 다른 이름으로 저장".
 
@@ -684,7 +724,7 @@ async def menu_select(path: str, hwnd: int | None = None) -> str:
     return result.describe()
 
 
-@mcp.tool()
+@_tool()
 async def wait_for_element(
     query: str,
     role: str | None = None,
@@ -720,7 +760,7 @@ async def wait_for_element(
     return result.describe()
 
 
-@mcp.tool()
+@_tool()
 async def control_window(
     action: Literal["minimize", "restore", "maximize", "move", "close", "info"],
     hwnd: int | None = None,
@@ -740,10 +780,11 @@ async def control_window(
     """
 
     try:
-        _guard_write()
+        action = action.strip().lower()
+        if action != "info":
+            _guard_write()  # info only reads
         session = _session(hwnd)
         target = session.hwnd
-        action = action.strip().lower()
         if action == "minimize":
             await _run(minimize, target)
         elif action == "restore":

@@ -1,3 +1,5 @@
+import pytest
+
 from claude_hands.win32.defs import make_lparam
 from claude_hands.win32.input import modifier_mk_flags, screen_point_in_element
 from claude_hands.win32.windows import Rect
@@ -53,3 +55,112 @@ def test_a_title_is_read_without_sending_the_window_a_message(monkeypatch):
 
     monkeypatch.setattr("claude_hands.win32.defs.user32", User32())
     assert windows._window_text(5) == "웹 페이지 메시지"
+
+
+# --------------------------------------------------------------------------
+# Pressing Win32 buttons without giving them focus
+# --------------------------------------------------------------------------
+
+
+class FakeUser32:
+    """Just enough of user32 for the button helpers, recording messages."""
+
+    def __init__(self, styles, enabled=True, root_enabled=True, group=()):
+        self.styles = styles
+        self.enabled = enabled
+        self.root_enabled = root_enabled
+        self.group = list(group)
+
+    def GetWindowLongW(self, hwnd, index):
+        return self.styles.get(hwnd, 0)
+
+    def IsWindowEnabled(self, hwnd):
+        return self.root_enabled if hwnd == 1 else self.enabled
+
+    def GetAncestor(self, hwnd, flag):
+        return 1
+
+    def GetParent(self, hwnd):
+        return 1
+
+    def GetDlgCtrlID(self, hwnd):
+        return hwnd
+
+    def GetNextDlgGroupItem(self, parent, hwnd, previous):
+        if not self.group:
+            return 0
+        i = self.group.index(hwnd)
+        return self.group[(i + 1) % len(self.group)]
+
+
+@pytest.fixture
+def buttons(monkeypatch):
+    from claude_hands.win32 import controls, defs
+
+    sent = []
+    checks = {}
+
+    def send(hwnd, message, wparam=0, lparam=0, timeout_ms=1500):
+        sent.append((hwnd, message, wparam, lparam))
+        if message == controls.BM_SETCHECK:
+            checks[hwnd] = wparam
+        if message == controls.BM_GETCHECK:
+            return checks.get(hwnd, 0)
+        return 0
+
+    monkeypatch.setattr(controls, "_send", send)
+    monkeypatch.setattr(controls, "is_button_class", lambda hwnd: True)
+
+    def install(**kw):
+        fake = FakeUser32(**kw)
+        monkeypatch.setattr(defs, "user32", fake, raising=False)
+        return fake
+
+    return controls, sent, checks, install
+
+
+def test_a_push_button_is_pressed_by_telling_its_parent(buttons):
+    # BM_CLICK replays a mouse press, the button takes focus, and its window
+    # came to the front (measured three times on target_app).
+    controls, sent, _checks, install = buttons
+    install(styles={10: 0})  # BS_PUSHBUTTON
+
+    controls.press_button(10)
+
+    assert sent == [(1, controls.WM_COMMAND, 10, 10)]
+    assert not any(message == controls.BM_CLICK for _h, message, _w, _l in sent)
+
+
+def test_a_checkbox_changes_state_and_then_tells_its_parent(buttons):
+    from claude_hands.win32.defs import BS_AUTOCHECKBOX
+
+    controls, sent, checks, install = buttons
+    install(styles={20: BS_AUTOCHECKBOX})
+
+    controls.toggle_button(20)
+
+    assert checks[20] == 1
+    assert sent[-1] == (1, controls.WM_COMMAND, 20, 20)
+
+
+def test_choosing_a_radio_button_clears_the_rest_of_its_group(buttons):
+    from claude_hands.win32.defs import BS_AUTORADIOBUTTON
+
+    controls, _sent, checks, install = buttons
+    install(styles={30: BS_AUTORADIOBUTTON, 31: BS_AUTORADIOBUTTON}, group=(30, 31))
+    checks[31] = 1
+
+    controls.toggle_button(30)
+
+    assert checks[30] == 1 and checks[31] == 0
+
+
+@pytest.mark.parametrize("enabled, root_enabled", [(False, True), (True, False)])
+def test_a_button_a_person_could_not_press_is_not_pressed(buttons, enabled, root_enabled):
+    # The notification would reach the parent regardless; a click would not.
+    controls, sent, _checks, install = buttons
+    install(styles={10: 0}, enabled=enabled, root_enabled=root_enabled)
+
+    with pytest.raises(controls.ClaudeHandsError):
+        controls.press_button(10)
+    assert sent == []

@@ -24,6 +24,12 @@ function save() { alert('저장 위치를 고르세요'); note('확인 눌림');
 <a href="#" onclick="save(); return false;">확인</a>
 <table id="route"><tr><td>처리방법</td><td>결재</td></tr></table>
 <a href="#" id="sanctn" onclick="note('결재올림 눌림'); return false;"><span>결재올림</span></a>
+<div id="jqbtn" style="cursor:pointer;display:inline-block"><span>결재하기</span></div>
+<script>(function () {
+  // A button wired the jQuery way: no onclick property to see.
+  var b = document.getElementById('jqbtn'), f = function () { note('결재하기 눌림'); };
+  if (b.attachEvent) { b.attachEvent('onclick', f); } else { b.addEventListener('click', f, false); }
+})();</script>
 <div id="log"></div>
 <iframe id="frame1" src="inner.html" width="600" height="200"></iframe>
 </body></html>
