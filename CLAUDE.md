@@ -65,6 +65,7 @@ src/claude_hands/
   win32/input.py     PostMessage 마우스/키 · 키 문자열 파서
   win32/controls.py  창 메시지 폴백 엔진 (HWND 컨트롤 → 패턴 프로토콜)
   win32/menus.py     실제 메뉴바 읽기 · WM_COMMAND 실행
+  win32/lists.py     목록 상자 · 콤보 · 트리 · 리스트뷰를 자기 메시지로 고르기 (교훈 38)
   uia/core.py        COM 워커 스레드 · 요소 래퍼 · 캐시 트리 구축
   office/core.py     Office 문서 모델 엔진 (PowerPoint · Word · Excel)
   office/hwp.py      한글 어댑터 (ROT 로 붙음 · 누름틀)
@@ -101,7 +102,7 @@ src/claude_hands/
 ## 검증하는 법
 
 ```bash
-pytest -q                                    # 389개
+pytest -q                                    # 399개
 
 # 남의 파일에 쓰지 않기 위한 전용 대상 창 (입력란·체크박스·대화상자 버튼)
 python examples/target_app.py
@@ -112,6 +113,9 @@ python examples/verify_live.py --process POWERPNT --engine uia --no-write
 # IE 웹 컨트롤 (K-에듀파인 WXSClient 와 같은 모양의 페이지)
 py examples/web_target.py
 py examples/verify_web.py
+
+# Win32 목록 상자·콤보·트리·리스트뷰 (사례마다 새 대상 창을 띄우고 닫음)
+py examples/verify_lists.py
 ```
 
 **`--write` 검증은 대상 창의 실제 문서를 바꿉니다.** `--process` 는 같은 이름의
@@ -578,8 +582,8 @@ auto 체크칸·라디오는 그 전에 상태도 바꿉니다(라디오는 같�
 
 `win32` 엔진의 첫 실기검증(15/15)이 깨끗했던 것은 창을 최소화한 구간이 많았고,
 `uia` 엔진으로는 `target_app.py` 를 돌린 적이 없었기 때문입니다. **창이 보이는
-상태와 최소화 상태를 둘 다 재세요.** 목록 상자·트리 같은 다른 Win32 클래스의 UIA
-패턴은 아직 안 쟀습니다.
+상태와 최소화 상태를 둘 다 재세요.** 목록 상자·콤보·트리·리스트뷰는 교훈 38 에서
+재고 고쳤습니다.
 
 ### 30. IE 페이지는 창 캡처에 안 찍힙니다
 
@@ -721,6 +725,56 @@ Explorer_Server`)을 **0x0 으로 줄입니다.** 페이지는 제 크기(1904x9
 - **서버.** 모든 도구에 마지막 그물을 쳐서 예상 못 한 예외도 한국어로 돌아갑니다.
   `control_window(info)` 는 읽기 전용 모드에서도 됩니다. `mcp<3` 으로 묶었습니다.
 
+### 38. Win32 목록·트리의 UIA 패턴도 전경을 가져갑니다 — 최소화돼 있어도
+
+교훈 29 끝에 "안 쟀다" 고 남긴 것을 2026-11-05 에 쟀습니다(`examples/list_target.py`,
+다른 프로그램이 앞에 있는 상태). **`ListBox`·`ComboBox`·`SysTreeView32`·
+`SysListView32` 항목의 UIA `Select`·`Expand`·`Invoke` 는 전부 대상 프로세스에
+전경을 넘겼습니다. 창이 최소화돼 있어도 그랬습니다** — 버튼(교훈 29)과 달리
+최소화가 막아 주지 않습니다. K-에듀파인 WXSClient 의 대화상자에도 이런 목록이 있습니다.
+
+그래서 UIA 노드 뒤에 이 클래스의 HWND 가 있으면 컨트롤 자기 메시지로 고릅니다
+(`actions._win32_list_item`·`_win32_combo` → `win32/lists.py`).
+
+| 컨트롤 | 고르기 | 펼치기 | 부모에게 보내는 알림 |
+|---|---|---|---|
+| 목록 상자 | `LB_SETCURSEL` (여러 개 고르기는 `LB_SETSEL`) | — | `LBN_SELCHANGE` (`LBS_NOTIFY` 일 때만, 컨트롤이 그러듯이) |
+| 콤보 | `CB_SETCURSEL` · 편집 가능하면 `WM_SETTEXT` | `CB_SHOWDROPDOWN` | `CBN_SELCHANGE`·`CBN_SELENDOK` / `CBN_EDITCHANGE` |
+| 트리 | `TVM_SELECTITEM` | `TVM_EXPAND` | 컨트롤이 스스로 보냄 |
+| 리스트뷰 | `LVM_SETITEMSTATE` | — | 컨트롤이 스스로 보냄 |
+
+`SetCursorPos`·`SendInput` 없이, 포커스도 옮기지 않습니다. `verify_lists.py` 로 보임·최소화
+각각 11가지, **22/22 통과**(전경 그대로, 알림 확인).
+
+알아 둘 것:
+
+- **어느 항목인지는 글자로 확인합니다.** UIA 가 알려 주는 자리(목록 상자는 MSAA
+  `ChildId - 1`, 리스트뷰는 자동화 id `ListViewItem-N`)를 먼저 보고, 그 자리 글자가
+  다르면 같은 글자를 가진 **하나뿐인** 항목을 고릅니다. 둘 이상이면 고르지 않고
+  다시 스냅샷하라고 말합니다. 트리 항목은 자리 번호가 없어서(ChildId 0) 뿌리부터의
+  이름 경로 + 같은 이름 중 몇째인지로 찾습니다.
+- **트리·리스트뷰의 글자는 남의 프로세스 메모리에서 읽습니다.** `LB_`·`CB_` 메시지는
+  `WM_USER` 아래라 Windows 가 문자열을 옮겨 주지만, `TVM_`·`LVM_` 구조체는 대상
+  프로세스에 `VirtualAllocEx` 로 자리를 잡아 쓰고 읽어야 합니다(`lists._Remote`).
+  32비트 대상(에듀파인 WXSClient)은 구조체의 포인터 칸이 4바이트입니다 — WOW64 를
+  보고 배치를 바꿉니다. **32비트 대상에는 아직 재 보지 않았습니다.**
+- **`WM_NOTIFY` 는 프로세스를 넘어 보낼 수 없습니다.** `SendMessageTimeout` 이 0 으로
+  돌아옵니다. 그래서 트리의 `TVN_ITEMEXPANDING` 을 우리가 흉내 낼 수 없습니다.
+- **펼칠 때 내용을 채우는 가지**(탐색기식 트리, `cChildren=1` 인데 하위가 없음)는
+  `TVM_EXPAND` 가 아무것도 안 합니다. [+] 자리에 클릭을 우편으로 보내 봤더니, 창이
+  보일 때 트리가 `SetFocus` 를 부르며 **창이 앞으로 나왔습니다**(교훈 29 와 같은 일).
+  그래서 그 항목을 `TVM_SELECTITEM` 으로 고른 뒤 `+` 키(`VK_ADD`)를 우편으로 보냅니다 —
+  보임·최소화 모두 전경 그대로였고, 트리가 스스로 `TVN_ITEMEXPANDING` 을 보내 부모가
+  내용을 채웠습니다. 항목이 **선택된다는 부작용**이 있어서 결과의 detail 에 적습니다.
+- **열린 콤보의 목록**은 따로 떠 있는 `ComboLBox` 창입니다. 거기 항목을 고르는 건
+  콤보에서 고르는 것이므로, `GetComboBoxInfo` 로 그 목록의 콤보를 찾아 콤보에
+  `CB_SETCURSEL` 합니다. 그 목록 창에서 콤보를 찾아 고르는 것까지는 쟀습니다(전경 그대로,
+  목록이 닫힘). UIA 가 그 목록의 항목을 어느 창 아래에 보여 주는지는 아직 못 쟀고, 콤보가
+  붙은 창 **안에서만** 찾으므로 다른 대화상자의 콤보면 UIA 로 내려갑니다.
+- 목록 항목은 교훈 34 의 거절 대상이 아닙니다(`CHOOSING_ROLES`) — 목록에서 「결재」
+  를 고르는 건 결재 종류를 고르는 것이지 결재가 아닙니다. 거절 검사는 그대로 먼저 돕니다.
+- WPF·UWP 목록은 HWND 가 없어서 지금처럼 UIA 로 갑니다.
+
 ## 지금까지 검증된 것
 
 Wine 위 Windows CPython 으로 실행 중인 Win32 프로그램(메모장·winecfg) 상대,
@@ -800,6 +854,10 @@ IE11 표준 모드 페이지(`outer_edge.html`)에서도 같은 동작을 확인
 - **큰 문서의 속도.** 37장 덱이 259개 노드이고 노드마다 프로세스 간 호출이
   붙습니다. 슬라이드 단위 지연 로딩이 필요할 수 있습니다.
 - **재현 못 한 전경 이동 1건** (위 참고).
+- **Win32 목록을 실제 프로그램에서** (교훈 38). 시험 창으로는 22/22 이지만 32비트
+  대상(WXSClient)·UIA 로 본 열린 콤보 목록의 항목·글자 없이 그리는(owner-drawn) 목록은
+  아직 못 쟀습니다. owner-drawn 목록은 글자를 못 읽어 빈칸으로 나오고, 그러면
+  이름으로 못 찾는다고 말합니다.
 
 ## 스타일
 

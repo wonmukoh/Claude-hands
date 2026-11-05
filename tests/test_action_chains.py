@@ -1465,3 +1465,205 @@ def test_a_read_only_win32_edit_is_left_alone(rec, edit_box):
     with pytest.raises(actions.ReadOnlyFieldError):
         actions.type_text(session, "e1", "0")
     assert rec.set_texts == []
+
+
+# --------------------------------------------------------------------------
+# Classic Win32 lists, combos and trees seen through UIA
+# --------------------------------------------------------------------------
+
+
+class FakeLists:
+    """Stand-ins for win32/lists.py, recording what each control was sent."""
+
+    def __init__(self):
+        self.kinds: dict[int, str] = {}
+        self.texts: dict[int, list[str]] = {}
+        self.editable: set[int] = set()
+        self.dropped: set[int] = set()
+        self.edit_text: dict[int, str] = {}
+        self.sent: list[tuple] = []
+
+
+@pytest.fixture
+def lists(monkeypatch):
+    fake = FakeLists()
+
+    def record(name):
+        return lambda *a, **k: fake.sent.append((name,) + a + tuple(sorted(k.items())))
+
+    def set_edit(hwnd, text):
+        fake.sent.append(("combo_set_edit_text", hwnd, text))
+        fake.edit_text[hwnd] = text
+
+    def show(hwnd, on):
+        fake.sent.append(("combo_show_dropdown", hwnd, on))
+        (fake.dropped.add if on else fake.dropped.discard)(hwnd)
+
+    def expand_tree(hwnd, item, *, collapse=False):
+        fake.sent.append(("tree_expand", hwnd, item, collapse))
+        return "접음" if collapse else "펼침"
+
+    monkeypatch.setattr(actions, "list_kind", lambda hwnd: fake.kinds.get(hwnd, ""))
+    for name in ("listbox_texts", "listview_texts", "combo_texts"):
+        monkeypatch.setattr(actions, name, lambda hwnd: fake.texts[hwnd])
+    for name in ("listbox_select", "listview_select", "combo_select", "tree_select"):
+        monkeypatch.setattr(actions, name, record(name))
+    monkeypatch.setattr(actions, "tree_find", lambda hwnd, path: ("item", hwnd, tuple(path)))
+    monkeypatch.setattr(actions, "tree_expand", expand_tree)
+    monkeypatch.setattr(actions, "combo_editable", lambda hwnd: hwnd in fake.editable)
+    monkeypatch.setattr(actions, "combo_dropped", lambda hwnd: hwnd in fake.dropped)
+    monkeypatch.setattr(actions, "combo_show_dropdown", show)
+    monkeypatch.setattr(actions, "combo_set_edit_text", set_edit)
+    monkeypatch.setattr(actions, "control_text", lambda hwnd: fake.edit_text.get(hwnd, ""))
+    monkeypatch.setattr(actions, "combo_for_dropdown", lambda lst, top: 600 if lst == 650 else 0)
+    return fake
+
+
+def nested_session(control: NodeInfo, refs: dict[str, tuple[NodeInfo, FakeElement]]) -> WindowSession:
+    """A session whose tree is window → control → (items as already nested)."""
+
+    session = make_session({"c": (control, FakeElement(control))})
+    for ref, (node, element) in refs.items():
+        node.ref = ref
+        session.refs[ref] = node
+        session.elements[id(node)] = element
+    return session
+
+
+def items_of(control: NodeInfo, names, role="listitem", **kw):
+    nodes = [NodeInfo(role=role, name=name, patterns=("selectionitem",), **kw) for name in names]
+    control.children.extend(nodes)
+    return nodes
+
+
+def test_a_listbox_item_is_chosen_by_message_not_uia_select(rec, lists):
+    # UIA's Select on a ListBox item handed the foreground to its process, even
+    # with the window minimised (measured).
+    box = NodeInfo(role="list", name="과일", class_name="ListBox", hwnd=500)
+    lists.kinds[500], lists.texts[500] = "listbox", ["사과", "배", "포도"]
+    _apple, pear, _grape = items_of(box, ["사과", "배", "포도"])
+    select = FakePattern()
+    legacy = FakePattern(CurrentChildId=2)  # MSAA counts from 1
+    session = nested_session(
+        box, {"e1": (pear, FakeElement(pear, {"selectionitem": select, "legacy": legacy}))}
+    )
+
+    result = actions.click(session, "e1")
+
+    assert result.strategy == "message:LB_SETCURSEL"
+    assert lists.sent == [("listbox_select", 500, 1, ("add", False))]
+    assert select.calls == [] and rec.clicks == []
+
+
+def test_adding_to_a_listbox_selection_keeps_the_rest(rec, lists):
+    box = NodeInfo(role="list", name="과일", class_name="ListBox", hwnd=500)
+    lists.kinds[500], lists.texts[500] = "listbox", ["사과", "배"]
+    _apple, pear = items_of(box, ["사과", "배"])
+    session = nested_session(box, {"e1": (pear, FakeElement(pear))})
+
+    result = actions.select(session, "e1", add=True)
+
+    assert result.strategy == "message:LB_SETSEL"
+    assert lists.sent == [("listbox_select", 500, 1, ("add", True))]
+
+
+def test_a_listview_row_is_found_by_its_automation_id(rec, lists):
+    view = NodeInfo(role="list", name="명단", class_name="SysListView32", hwnd=510)
+    lists.kinds[510], lists.texts[510] = "listview", ["가람", "나래", "가람"]
+    row = NodeInfo(role="listitem", name="가람", automation_id="ListViewItem-2")
+    view.children.append(row)
+    session = nested_session(view, {"e1": (row, FakeElement(row))})
+
+    result = actions.select(session, "e1")
+
+    # The two 가람 rows are told apart by where UIA says this one is.
+    assert result.strategy == "message:LVM_SETITEMSTATE"
+    assert lists.sent == [("listview_select", 510, 2, ("add", False))]
+
+
+def test_a_tree_item_is_found_by_its_path_and_twin_index(rec, lists):
+    tree = NodeInfo(role="tree", name="분류", class_name="SysTreeView32", hwnd=520)
+    lists.kinds[520] = "treeview"
+    _fruit_a, fruit_b = items_of(tree, ["과일", "과일"], role="treeitem")
+    (persimmon,) = items_of(fruit_b, ["감"], role="treeitem")
+    session = nested_session(tree, {"e1": (persimmon, FakeElement(persimmon)),
+                                    "e2": (fruit_b, FakeElement(fruit_b))})
+
+    assert actions.select(session, "e1").strategy == "message:TVM_SELECTITEM"
+    assert lists.sent == [("tree_select", 520, ("item", 520, (("과일", 1), ("감", 0))))]
+
+    lists.sent.clear()
+    result = actions.expand(session, "e2", collapse=True)
+    assert result.strategy == "message:TVM_EXPAND" and result.detail == "접음"
+    assert lists.sent == [("tree_expand", 520, ("item", 520, (("과일", 1),)), True)]
+
+
+def test_a_combo_opens_by_message_and_a_click_toggles_it(rec, lists):
+    combo = NodeInfo(role="combobox", name="학년", class_name="ComboBox", hwnd=600,
+                     patterns=("expandcollapse",))
+    lists.kinds[600] = "combobox"
+    expand = FakePattern()
+    session = make_session({"e1": (combo, FakeElement(combo, {"expandcollapse": expand}))})
+
+    assert actions.expand(session, "e1").strategy == "message:CB_SHOWDROPDOWN"
+    assert actions.click(session, "e1").detail == "목록 닫힘"
+    assert lists.sent == [("combo_show_dropdown", 600, True), ("combo_show_dropdown", 600, False)]
+    assert expand.calls == []
+
+
+def test_an_item_in_an_open_combos_list_is_chosen_in_the_combo(rec, lists):
+    # The dropped-down list is a separate ComboLBox window; choosing there must
+    # go to the combo so it notifies its parent.
+    drop = NodeInfo(role="list", name="", class_name="ComboLBox", hwnd=650)
+    lists.kinds[650], lists.texts[600] = "combolbox", ["하나", "둘", "셋"]
+    (three,) = items_of(drop, ["셋"])
+    session = nested_session(drop, {"e1": (three, FakeElement(three))})
+
+    assert actions.click(session, "e1").strategy == "message:CB_SETCURSEL"
+    assert lists.sent == [("combo_select", 600, 2)]
+
+
+def test_typing_into_a_combo_chooses_the_matching_item(rec, lists):
+    combo = NodeInfo(role="combobox", name="학년", class_name="ComboBox", hwnd=600)
+    lists.kinds[600], lists.texts[600] = "combobox", ["1학년", "2학년"]
+    value = FakePattern(CurrentValue="")
+    session = make_session({"e1": (combo, FakeElement(combo, {"value": value}))})
+
+    result = actions.type_text(session, "e1", "2학년")
+
+    assert result.strategy == "message:CB_SETCURSEL"
+    assert lists.sent == [("combo_select", 600, 1)]
+    assert value.calls == []
+
+
+def test_an_editable_combo_takes_text_that_is_not_an_item(rec, lists):
+    combo = NodeInfo(role="combobox", name="검색어", class_name="ComboBox", hwnd=600)
+    lists.kinds[600], lists.texts[600] = "combobox", ["최근1"]
+    lists.editable.add(600)
+    session = make_session({"e1": (combo, FakeElement(combo))})
+
+    result = actions.type_text(session, "e1", "새 낱말")
+
+    assert result.strategy == "message:WM_SETTEXT"
+    assert lists.sent == [("combo_set_edit_text", 600, "새 낱말")]
+
+
+def test_a_pick_only_combo_names_what_it_offers_instead_of_guessing(rec, lists):
+    combo = NodeInfo(role="combobox", name="학년", class_name="ComboBox", hwnd=600)
+    lists.kinds[600], lists.texts[600] = "combobox", ["1학년", "2학년"]
+    session = make_session({"e1": (combo, FakeElement(combo))})
+
+    with pytest.raises(ActionFailedError, match="「1학년」, 「2학년」"):
+        actions.type_text(session, "e1", "3학년")
+    assert lists.sent == []
+
+
+def test_lists_without_a_window_of_their_own_still_use_uia(rec, lists):
+    # WPF and UWP lists have no HWND; their UIA patterns do not steal focus.
+    box = NodeInfo(role="list", name="과일", class_name="ListBox", hwnd=0)
+    (pear,) = items_of(box, ["배"])
+    select = FakePattern()
+    session = nested_session(box, {"e1": (pear, FakeElement(pear, {"selectionitem": select}))})
+
+    assert actions.select(session, "e1").strategy == "uia:selectionitem"
+    assert select.calls == [("Select",)] and lists.sent == []

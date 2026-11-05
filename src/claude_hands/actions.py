@@ -41,6 +41,24 @@ from .win32.controls import (
     press_button,
     toggle_button,
 )
+from .win32.lists import (
+    combo_dropped,
+    combo_editable,
+    combo_for_dropdown,
+    combo_select,
+    combo_set_edit_text,
+    combo_show_dropdown,
+    combo_texts,
+    find_index,
+    list_kind,
+    listbox_select,
+    listbox_texts,
+    listview_select,
+    listview_texts,
+    tree_expand,
+    tree_find,
+    tree_select,
+)
 from .win32.windows import Rect, deepest_child_at
 
 
@@ -189,6 +207,18 @@ def click(
         attempts.append("message:BN_CLICKED")
         press_button(native)
         return ActionResult(True, "click", "message:BN_CLICKED", label, attempts=attempts)
+
+    if simple_left and not force_message:
+        item = _win32_list_item(session, element, node)
+        if item is not None:
+            return _choose_native(item, label, action="click")
+        combo = _win32_combo(session, element, node)
+        if combo:
+            # A click on a combo, or on its arrow, opens or closes its list.
+            show = not combo_dropped(combo)
+            combo_show_dropdown(combo, show)
+            return ActionResult(True, "click", "message:CB_SHOWDROPDOWN", label,
+                                detail="목록 열림" if show else "목록 닫힘")
 
     if simple_left and not force_message:
         for strategy, runner in _click_pattern_chain(element, node):
@@ -371,6 +401,166 @@ def _win32_button(element, node: NodeInfo) -> int:
         return node.hwnd if is_button_class(node.hwnd) else 0
     except Exception:  # noqa: BLE001 - a window that vanished is not a button
         return 0
+
+
+@dataclass
+class _NativeItem:
+    """An item of a classic Win32 list, located the way its control counts."""
+
+    kind: str  # listbox · combobox · treeview · listview
+    hwnd: int  # the control itself
+    name: str
+    hint: Optional[int] = None  # where UIA says it is; checked against the text
+    tree_path: tuple[tuple[str, int], ...] = ()
+
+
+def _ancestors(tree: Optional[NodeInfo], target: NodeInfo) -> Optional[list[NodeInfo]]:
+    """The nodes from the root down to ``target``'s parent, or None."""
+
+    if tree is None:
+        return None
+    path: list[NodeInfo] = []
+
+    def walk(node: NodeInfo) -> bool:
+        if node is target:
+            return True
+        path.append(node)
+        for child in node.children:
+            if walk(child):
+                return True
+        path.pop()
+        return False
+
+    return path if walk(tree) else None
+
+
+def _list_control(session: WindowSession, node: NodeInfo):
+    """``(chain, control node, kind)`` for a node inside a classic list, else None."""
+
+    chain = _ancestors(getattr(session, "tree", None), node)
+    if not chain:
+        return None
+    control = next((n for n in reversed(chain[1:]) if n.hwnd), None)
+    if control is None:
+        return None
+    try:
+        kind = list_kind(control.hwnd)
+    except Exception:  # noqa: BLE001 - a window that vanished is not a list
+        return None
+    return (chain, control, kind) if kind else None
+
+
+def _win32_list_item(session: WindowSession, element, node: NodeInfo) -> Optional[_NativeItem]:
+    """The classic list item behind a UIA list or tree item, or None.
+
+    UI Automation's Select, Expand and Invoke on these items hand the keyboard
+    to the list's process — measured visible and minimised on ListBox,
+    ComboBox, SysTreeView32 and SysListView32 alike (win32/lists.py). They are
+    chosen through the control's own messages instead.
+    """
+
+    if _engine(element) != "uia" or node.role not in {"listitem", "treeitem"}:
+        return None
+    found = _list_control(session, node)
+    if found is None:
+        return None
+    chain, control, kind = found
+
+    if kind == "treeview":
+        steps: list[tuple[str, int]] = []
+        parent = control
+        start = next(i for i, n in enumerate(chain) if n is control)
+        for level in chain[start + 1:] + [node]:
+            if level.role != "treeitem":
+                return None
+            twins = [c for c in parent.children if c.role == "treeitem" and c.name == level.name]
+            steps.append((level.name, next(i for i, c in enumerate(twins) if c is level)))
+            parent = level
+        return _NativeItem("treeview", control.hwnd, node.name, tree_path=tuple(steps))
+
+    hint = None
+    match = re.fullmatch(r"ListViewItem-(\d+)", node.automation_id or "")
+    if match:
+        hint = int(match.group(1))
+    else:
+        legacy = element.pattern("legacy")
+        if legacy is not None:
+            try:
+                # MSAA numbers a list's items from 1.
+                hint = int(_call(element, lambda: legacy.CurrentChildId)) - 1
+            except CHAIN_STOPPERS:
+                raise
+            except Exception:  # noqa: BLE001 - the text decides anyway
+                hint = None
+    hwnd = control.hwnd
+    if kind == "combolbox":
+        # An open combo's list: choosing there is choosing in the combo.
+        hwnd = combo_for_dropdown(control.hwnd, session.hwnd)
+        if not hwnd:
+            return None
+        kind = "combobox"
+    return _NativeItem(kind, hwnd, node.name, hint=hint)
+
+
+def _choose_native(item: _NativeItem, label: str, *, add: bool = False, action: str = "select") -> ActionResult:
+    if item.kind == "treeview":
+        tree_select(item.hwnd, tree_find(item.hwnd, list(item.tree_path)))
+        return ActionResult(True, action, "message:TVM_SELECTITEM", label)
+    if item.kind == "listview":
+        listview_select(item.hwnd, find_index(listview_texts(item.hwnd), item.name, item.hint), add=add)
+        return ActionResult(True, action, "message:LVM_SETITEMSTATE", label)
+    if item.kind == "combobox":
+        combo_select(item.hwnd, find_index(combo_texts(item.hwnd), item.name, item.hint))
+        return ActionResult(True, action, "message:CB_SETCURSEL", label)
+    listbox_select(item.hwnd, find_index(listbox_texts(item.hwnd), item.name, item.hint), add=add)
+    return ActionResult(True, action, "message:LB_SETSEL" if add else "message:LB_SETCURSEL", label)
+
+
+def _win32_combo(session: WindowSession, element, node: NodeInfo) -> int:
+    """The HWND of a classic combo box this node is, or is the open button of; else 0.
+
+    UIA's Expand on a Win32 combo handed the foreground to its window
+    (measured); CB_SHOWDROPDOWN opens the same list and leaves it alone.
+    """
+
+    if _engine(element) != "uia":
+        return 0
+    if node.role == "combobox" and node.hwnd:
+        try:
+            return node.hwnd if list_kind(node.hwnd) == "combobox" else 0
+        except Exception:  # noqa: BLE001
+            return 0
+    if node.role == "button":
+        found = _list_control(session, node)
+        if found is not None and found[2] == "combobox":
+            return found[1].hwnd
+    return 0
+
+
+def _type_into_combo(hwnd: int, label: str, text: str, *, clear: bool, submit: bool) -> ActionResult:
+    """Choose the item called ``text``; an editable combo takes any text."""
+
+    items = combo_texts(hwnd)
+    if clear and text in items:
+        combo_select(hwnd, items.index(text))
+        strategy = "message:CB_SETCURSEL"
+    elif combo_editable(hwnd):
+        before = control_text(hwnd)
+        new_text = text if clear else before + text
+        combo_set_edit_text(hwnd, new_text)
+        if not _landed(control_text(hwnd), new_text, before):
+            raise ActionFailedError(f"{label} 에 쓴 값이 반영되지 않았습니다.")
+        strategy = "message:WM_SETTEXT"
+    else:
+        shown = ", ".join(f"「{item}」" for item in items[:30])
+        more = f" 외 {len(items) - 30}개" if len(items) > 30 else ""
+        raise ActionFailedError(
+            f"{label} 은(는) 목록에서 고르기만 하는 콤보 상자인데 「{text}」 항목이 없습니다. "
+            f"고를 수 있는 항목: {shown or '(없음)'}{more}"
+        )
+    if submit:
+        send_keys(hwnd, "enter")
+    return ActionResult(True, "type", strategy, label, detail=text, attempts=[strategy])
 
 
 def _session_engine(session: WindowSession) -> str:
@@ -570,6 +760,9 @@ def type_text(
     native_edit = _win32_edit(element, node)
     if native_edit:
         return _type_into_edit(native_edit, label, text, clear=clear, submit=submit)
+    native_combo = _win32_combo(session, element, node) if node.role == "combobox" else 0
+    if native_combo:
+        return _type_into_combo(native_combo, label, text, clear=clear, submit=submit)
 
     def current(pattern):
         try:
@@ -934,6 +1127,9 @@ def select(session: WindowSession, ref: str, *, add: bool = False) -> ActionResu
     node, element = session.resolve(ref)
     label = _target_label(node)
     _refuse_user_only(node.name, node.automation_id, node.role, _inside_pressable(element))
+    item = _win32_list_item(session, element, node)
+    if item is not None:
+        return _choose_native(item, label, add=add)
     pattern = element.pattern("selectionitem")
     if pattern is None:
         return click(session, ref)
@@ -1027,6 +1223,15 @@ def expand(session: WindowSession, ref: str, *, collapse: bool = False) -> Actio
     node, element = session.resolve(ref)
     label = _target_label(node)
     _refuse_user_only(node.name, node.automation_id, node.role, _inside_pressable(element))
+    verb = "collapse" if collapse else "expand"
+    item = _win32_list_item(session, element, node)
+    if item is not None and item.kind == "treeview":
+        done = tree_expand(item.hwnd, tree_find(item.hwnd, list(item.tree_path)), collapse=collapse)
+        return ActionResult(True, verb, "message:TVM_EXPAND", label, detail=done)
+    combo = _win32_combo(session, element, node)
+    if combo:
+        combo_show_dropdown(combo, not collapse)
+        return ActionResult(True, verb, "message:CB_SHOWDROPDOWN", label)
     pattern = element.pattern("expandcollapse")
     if pattern is None:
         return click(session, ref)
