@@ -34,7 +34,7 @@ from .win32.windows import (  # noqa: F401,E402
     WindowNotFoundError,
 )
 
-__version__ = "0.2.1"
+__version__ = "0.2.2"
 
 __all__ = [
     "Window",
