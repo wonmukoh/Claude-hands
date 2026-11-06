@@ -257,6 +257,66 @@ def schedule_script(document, source: str) -> None:
 # --------------------------------------------------------------------------
 
 
+def _find_frame(document, step):
+    """The frame a locator went through, found again.
+
+    ``step`` is ``(index, id, name)`` — or a bare index from older refs. 실측
+    (2026-11-05): 기안 창에서 제목을 넣거나 수신자를 지정하면(자동발송 체크칸이
+    생김) 바깥 페이지의 ``document.all`` 이 밀려, 그 인덱스가 프레임이 아니게 되어
+    본문 컨트롤 ``editor1`` 의 ref 가 「페이지가 바뀌어」로 끊겼습니다. 요소는 id 로
+    다시 찾던 것처럼(``element``) 프레임도 id·name 으로, 그것도 없으면 하나뿐인
+    프레임일 때만 다시 찾습니다. 둘 이상이면 짐작하지 않습니다.
+    """
+
+    if isinstance(step, tuple):
+        index, frame_id, frame_name = (tuple(step) + ("", "", ""))[:3]
+    else:
+        index, frame_id, frame_name = int(step), "", ""
+
+    def matches(node) -> bool:
+        try:
+            if node is None or str(node.tagName) not in {"IFRAME", "FRAME"}:
+                return False
+            if str(getattr(node, "id", "") or "") != frame_id:
+                return False
+            name = getattr(node, "name", "")
+            return (name if isinstance(name, str) else "") == frame_name
+        except Exception:  # noqa: BLE001 - a node without these is not ours
+            return False
+
+    def is_frame(node) -> bool:
+        try:
+            return node is not None and str(node.tagName) in {"IFRAME", "FRAME"}
+        except Exception:  # noqa: BLE001
+            return False
+
+    candidate = document.all.item(index)
+    if isinstance(step, tuple) and matches(candidate):
+        return candidate
+    if not isinstance(step, tuple) and is_frame(candidate):
+        return candidate  # 옛 형식 ref: 예전과 똑같이 판단
+    if not isinstance(step, tuple):
+        return None
+    if frame_id:
+        try:
+            candidate = document.getElementById(frame_id)
+        except Exception:  # noqa: BLE001
+            candidate = None
+        if matches(candidate):
+            return candidate
+    found = []
+    for tag in ("iframe", "frame"):
+        try:
+            items = document.getElementsByTagName(tag)
+            for position in range(int(items.length)):
+                item = items.item(position)
+                if matches(item):
+                    found.append(item)
+        except Exception:  # noqa: BLE001
+            continue
+    return found[0] if len(found) == 1 else None
+
+
 class _Locator:
     """Where an element lives: which IE window, which frames, which index.
 
@@ -267,7 +327,7 @@ class _Locator:
     def __init__(
         self,
         server_hwnd: int,
-        frames: tuple[int, ...],
+        frames: tuple,
         index: int,
         tag: str,
         dom_id: str,
@@ -287,9 +347,9 @@ class _Locator:
 
     def document(self):
         document = document_of(self.server_hwnd)
-        for frame_index in self.frames:
-            frame = document.all.item(frame_index)
-            if frame is None or str(getattr(frame, "tagName", "")) not in {"IFRAME", "FRAME"}:
+        for step in self.frames:
+            frame = _find_frame(document, step)
+            if frame is None:
                 raise PageChangedError(
                     "페이지가 바뀌어 요소가 있던 프레임을 다시 찾지 못했습니다. snapshot 을 다시 찍으세요."
                 )
@@ -893,12 +953,14 @@ def _walk_document(
         budget[0] -= 1
 
         if role == "frame":
-            _walk_frame(document, index, node, server_hwnd, frames, origin, element_index, budget, rect_text)
+            _walk_frame(document, index, node, server_hwnd, frames, origin, element_index, budget, rect_text,
+                        frame_step=(index, dom_id, dom_name))
         elif role == "activex" and normalise_clsid(value) in HWP_CONTROL_CLSIDS:
             _walk_hwp_control(document, index, node, element_index, budget)
 
 
-def _walk_frame(document, index, node, server_hwnd, frames, origin, element_index, budget, rect_text):
+def _walk_frame(document, index, node, server_hwnd, frames, origin, element_index, budget, rect_text,
+                frame_step=None):
     try:
         inner = document.all.item(index).contentWindow.document
     except Exception:  # noqa: BLE001 - another origin refuses
@@ -917,7 +979,7 @@ def _walk_frame(document, index, node, server_hwnd, frames, origin, element_inde
         _walk_document(
             inner,
             server_hwnd=server_hwnd,
-            frames=frames + (index,),
+            frames=frames + (frame_step if frame_step is not None else index,),
             origin=inner_origin,
             parent=node,
             depth=node.depth,

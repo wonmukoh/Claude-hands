@@ -171,3 +171,30 @@ def test_an_object_answer_is_named_not_mistaken_for_text():
 def test_the_control_refusing_is_an_error():
     with pytest.raises(ControlCallError, match="형식이 올바르지"):
         decode("error\x1f형식이 올바르지 않습니다")
+
+
+# --------------------------------------------------------------------------
+# Found live (2026-11-05, 기안 창): line breaks and modal formats
+# --------------------------------------------------------------------------
+
+
+def test_put_field_text_turns_json_newlines_into_paragraph_breaks():
+    # The 한글 control drops a bare \n; only \r\n makes a paragraph.
+    checked = check_call(lookup(HWP_CONTROL, "PutFieldText"), "PutFieldText",
+                         ["본문", "1. 관련\n2. 내용\r\n\n붙임"])
+    assert checked == ["본문", "1. 관련\r\n2. 내용\r\n\r\n붙임"]
+
+
+def test_put_field_text_leaves_single_line_text_alone():
+    assert check_call(lookup(HWP_CONTROL, "PutFieldText"), "PutFieldText", ["제목", "한 줄"])[1] == "한 줄"
+
+
+@pytest.mark.parametrize("fmt", ["TEXT", "HTML", "html", "", None])
+def test_set_text_file_formats_that_open_a_modal_or_crash_are_refused(fmt):
+    with pytest.raises(ClaudeHandsError, match="PutFieldText"):
+        check_call(lookup(HWP_CONTROL, "SetTextFile"), "SetTextFile", ["가나다", fmt, "insertfile"])
+
+
+@pytest.mark.parametrize("fmt", ["HWP", "HWPML2X", "hwpml2x"])
+def test_set_text_file_formats_without_a_dialog_still_work(fmt):
+    check_call(lookup(HWP_CONTROL, "SetTextFile"), "SetTextFile", ["<x/>", fmt, "insertfile"])

@@ -167,7 +167,7 @@ class HwpAdapter:
                 return
 
             def read(name=name) -> str:
-                return str(com_retry(lambda: app.GetFieldText(name)) or "")
+                return str(com_retry(lambda: app.GetFieldText(name)) or "").replace("\r\n", "\n")
 
             def write(value: str, name=name) -> None:
                 if attached is not None:
@@ -175,7 +175,9 @@ class HwpAdapter:
                     # have opened another document since, and PutFieldText
                     # writes to whichever is active.
                     _ensure_still_alone(app, attached)
-                com_retry(lambda: app.PutFieldText(name, value))
+                # 한글은 맨 \n 을 지우고 \r\n 에서만 문단을 나눕니다.
+                text = str(value).replace("\r\n", "\n").replace("\n", "\r\n")
+                com_retry(lambda: app.PutFieldText(name, text))
 
             emit(
                 OfficeElement(

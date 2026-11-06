@@ -310,9 +310,18 @@ CHOOSING_ROLES = {"listitem", "radiobutton", "checkbox", "combobox", "edit", "ta
 """Roles that only choose, never commit. The approver dialog's 결재유형 list
 offers 결재·전결·대결 as options, and picking one is part of drafting."""
 
-USER_ONLY_IDS = {"sanctn", "processdoc", "requestmodifyline", "ofldcntt", "ofldcnttspan"}
-"""The same buttons by DOM id, lower-cased: K-에듀파인's 결재올림 (기안 window),
-and 문서처리, 재지정요청 and 공문게시지정 with its caption span (결재 window)."""
+USER_ONLY_IDS = {
+    "sanctn",
+    "processdoc",
+    "requestmodifyline",
+    "ofldcntt",
+    "ofldcnttspan",
+    "autosendgian",
+    "autosendgianview",
+}
+"""The same buttons by DOM id, lower-cased: K-에듀파인's 결재올림 and 자동발송
+checkbox (기안 window), and 문서처리, 재지정요청 and 공문게시지정 with its caption
+span (결재 window)."""
 
 ALLOW_SEND_ENV = "CLAUDE_HANDS_ALLOW_SEND"
 
@@ -344,12 +353,21 @@ def _refuse_user_only(
 
     if os.environ.get(ALLOW_SEND_ENV, "").lower() in {"1", "true", "yes"}:
         return
+    # Explicit user-only DOM ids (including checkboxes like autoSendGian) are
+    # refused before CHOOSING_ROLES exempts generic checkboxes/listitems.
+    if (automation_id or "").lower() in USER_ONLY_IDS:
+        shown = (name or automation_id).strip()
+        raise UserOnlyActionError(
+            f"「{shown}」은(는) 사용자가 직접 누르는 버튼이라 이 도구는 누르지 않습니다. "
+            "결재를 올리거나 승인하거나 문서를 보내는 일은 되돌릴 수 없어서 사용자의 몫입니다. "
+            "준비가 끝났다고 사용자에게 알리세요. 저장만 필요하면 임시저장을 누르면 됩니다."
+        )
     if role in CHOOSING_ROLES:
         return
     if role == "text" and not inside_pressable:
         # A table cell reading 결재 in the 결재경로 table presses nothing.
         return
-    if _bare_labels(name) & USER_ONLY_LABELS or (automation_id or "").lower() in USER_ONLY_IDS:
+    if _bare_labels(name) & USER_ONLY_LABELS:
         shown = (name or automation_id).strip()
         raise UserOnlyActionError(
             f"「{shown}」은(는) 사용자가 직접 누르는 버튼이라 이 도구는 누르지 않습니다. "

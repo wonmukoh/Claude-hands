@@ -1667,3 +1667,46 @@ def test_lists_without_a_window_of_their_own_still_use_uia(rec, lists):
 
     assert actions.select(session, "e1").strategy == "uia:selectionitem"
     assert select.calls == [("Select",)] and lists.sent == []
+
+
+# --------------------------------------------------------------------------
+# Found live (2026-11-05): 자동발송 is the user's, though it is a checkbox
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("dom_id", ["autoSendGian", "autoSendGianView"])
+def test_the_auto_send_checkbox_is_left_to_the_user(rec, dom_id, monkeypatch):
+    # 체크해 두면 결재가 끝나는 순간 문서가 나갑니다. 체크칸이라 CHOOSING_ROLES 로
+    # 빠져나가던 것을, id 로 먼저 막습니다.
+    monkeypatch.delenv(actions.ALLOW_SEND_ENV, raising=False)
+    node = NodeInfo(role="checkbox", name="자동발송", automation_id=dom_id,
+                    patterns=("toggle",), toggle_state="off")
+    toggle = FakePattern(CurrentToggleState=0)
+    session = make_session({"e1": (node, FakeElement(node, {"toggle": toggle}))})
+
+    with pytest.raises(actions.UserOnlyActionError):
+        actions.toggle(session, "e1", to=True)
+    with pytest.raises(actions.UserOnlyActionError):
+        actions.click(session, "e1")
+    assert toggle.calls == []
+
+
+def test_other_checkboxes_named_like_approval_stay_choosable(rec, monkeypatch):
+    monkeypatch.delenv(actions.ALLOW_SEND_ENV, raising=False)
+    node = NodeInfo(role="checkbox", name="결재", automation_id="chkLine1",
+                    patterns=("toggle",), toggle_state="off")
+    toggle = FakePattern(CurrentToggleState=0)
+    session = make_session({"e1": (node, FakeElement(node, {"toggle": toggle}))})
+
+    assert actions.toggle(session, "e1", to=True).ok
+
+
+def test_multi_line_field_text_reads_back_as_written(rec):
+    # 실측 실패: \n 으로 넣고 \n 없이 되읽혀 「되읽은 값이 다릅니다」.
+    control = hwp(answers={"GetFieldText": "1. 관련\r\n2. 내용"})
+
+    result = actions.call_control(control_session(control), "e1", "PutFieldText",
+                                  ["본문", "1. 관련\n2. 내용"])
+
+    assert result.ok
+    assert control.calls[0] == ("PutFieldText", ("본문", "1. 관련\r\n2. 내용"))

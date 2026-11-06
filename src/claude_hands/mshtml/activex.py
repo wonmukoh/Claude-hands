@@ -89,6 +89,32 @@ def _check_run(args: list) -> None:
     )
 
 
+def _check_put_field_text(args: list) -> None:
+    # 실측(2026-11-05, 기안 창 본문 누름틀): 한글 컨트롤의 PutFieldText 는 맨 \n 을
+    # 지우고 \r\n 에서만 문단을 나눕니다. MCP/JSON 으로 오는 글은 \n 이라 여러 줄
+    # 본문이 한 문단으로 붙고, 되읽기도 실패했습니다. 페이지에 넘기기 전에 바꿉니다.
+    if len(args) > 1 and isinstance(args[1], str):
+        args[1] = re.sub(r"\r?\n", "\r\n", args[1])
+
+
+HWP_SETTEXTFILE_FORMATS = {"HWP", "HWPML2X"}
+
+
+def _check_set_text_file(args: list) -> None:
+    # 실측: 'TEXT'·'HTML' 은 문자 코드(인터넷 문서 종류) 모달 창을 띄워 기안 창을
+    # 멈추게 하고 그 창은 「확인」이 안 먹습니다. 빈 형식은 WXSClient 를 죽입니다.
+    fmt = str(args[1]).strip().upper() if len(args) > 1 and args[1] is not None else ""
+    if fmt not in HWP_SETTEXTFILE_FORMATS:
+        shown = args[1] if len(args) > 1 else ""
+        raise ClaudeHandsError(
+            f"SetTextFile 의 형식 {shown!r} 은(는) 허용하지 않습니다. "
+            "'TEXT'·'HTML' 은 문자 코드 모달 창을 띄워 기안 창을 멈추게 하고, "
+            "빈 형식은 WXSClient 를 비정상 종료시킵니다. 누름틀에 여러 줄 글을 넣으려면 "
+            "PutFieldText(누름틀, 글) 를 쓰세요(\\n 줄바꿈을 자동으로 문단으로 바꿉니다). "
+            "서식 있는 문서를 넣을 때만 'HWP' 또는 'HWPML2X' 를 쓰세요."
+        )
+
+
 HWP_CONTROL = Control(
     label="한글 컨트롤",
     methods={
@@ -115,13 +141,13 @@ HWP_CONTROL = Control(
         "ReadOnlyMode": Method(READ, property=True),
         "CurFieldState": Method(READ, property=True),
         # write
-        "PutFieldText": Method(WRITE, ("fieldlist", "textlist")),
+        "PutFieldText": Method(WRITE, ("fieldlist", "textlist"), check=_check_put_field_text),
         "MoveToField": Method(WRITE, ("field", "text", "start", "select")),
         "MoveToFieldEx": Method(WRITE, ("field", "text", "start", "select")),
         "MovePos": Method(WRITE, ("moveID", "para", "pos")),
         "SetPos": Method(WRITE, ("list", "para", "pos")),
         "SelectText": Method(WRITE, ("spara", "spos", "epara", "epos")),
-        "SetTextFile": Method(WRITE, ("data", "format", "option")),
+        "SetTextFile": Method(WRITE, ("data", "format", "option"), check=_check_set_text_file),
         "Insert": Method(WRITE, ("Path", "format", "arg"), path_in=0),
         "InsertDocument": Method(WRITE, ("szFileName",), path_in=0),
         "InsertPicture": Method(

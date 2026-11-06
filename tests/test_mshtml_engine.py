@@ -546,3 +546,71 @@ def test_a_partial_choice_that_fits_several_options_is_refused(page):
     with pytest.raises(ClaudeHandsError, match="여럿"):
         _ValuePattern(_Locator(1, (), 25, "SELECT", "kind", ""), "select").SetValue("결재")
     assert select.selectedIndex == 0
+
+
+# --------------------------------------------------------------------------
+# Found live (2026-11-05): the outer page grew and the 본문 frame moved
+# --------------------------------------------------------------------------
+
+
+class FakeTagList:
+    def __init__(self, nodes):
+        self._nodes = nodes
+        self.length = len(nodes)
+
+    def item(self, index):
+        return self._nodes[index]
+
+
+def frame_page(page, nodes, by_id=None, frames=()):
+    doc = page(nodes, by_id)
+    doc.getElementsByTagName = lambda tag: FakeTagList(
+        [f for f in frames if f.tagName == tag.upper()]
+    )
+    return doc
+
+
+def test_a_frame_that_moved_down_the_page_is_found_by_its_id(page):
+    # 수신자 지정이 자동발송 체크칸을 프레임 위에 끼워 넣자 인덱스가 밀렸습니다.
+    inner = object()
+    frame = FakeNode("IFRAME", "bodyFrame", "", contentWindow=type("W", (), {"document": inner})())
+    frame_page(page, {7: FakeNode("INPUT", "autoSendGian"), 8: frame}, by_id={"bodyFrame": frame})
+
+    assert _Locator(1, ((7, "bodyFrame", ""),), 11, "OBJECT", "editor1", "").document() is inner
+
+
+def test_a_frame_without_an_id_is_found_again_only_if_it_is_the_only_one(page):
+    inner = object()
+    frame = FakeNode("IFRAME", "", "", contentWindow=type("W", (), {"document": inner})())
+    frame_page(page, {7: FakeNode("DIV"), 8: frame}, frames=[frame])
+    assert _Locator(1, ((7, "", ""),), 11, "OBJECT", "editor1", "").document() is inner
+
+    other = FakeNode("IFRAME", "", "", contentWindow=type("W", (), {"document": object()})())
+    frame_page(page, {7: FakeNode("DIV"), 8: frame, 9: other}, frames=[frame, other])
+    with pytest.raises(PageChangedError):
+        _Locator(1, ((7, "", ""),), 11, "OBJECT", "editor1", "").document()
+
+
+def test_a_different_frame_at_the_old_index_is_not_taken_for_ours(page):
+    wrong = FakeNode("IFRAME", "menuFrame", "", contentWindow=type("W", (), {"document": object()})())
+    frame_page(page, {7: wrong}, frames=[wrong])
+
+    with pytest.raises(PageChangedError):
+        _Locator(1, ((7, "bodyFrame", ""),), 11, "OBJECT", "editor1", "").document()
+
+
+def test_the_walk_remembers_a_frame_by_index_id_and_name(monkeypatch):
+    seen = {}
+
+    def fake_walk_frame(document, index, node, server_hwnd, frames, origin, element_index, budget,
+                        rect_text, frame_step=None):
+        seen["step"] = frame_step
+
+    monkeypatch.setattr(core, "_walk_frame", fake_walk_frame)
+    raw = RS.join([
+        US.join(["기안", "5", "1", "0"]),
+        record(8, -1, "frame", "IFRAME", "", "bodyFrame", "body", "본문"),
+    ])
+    walk(monkeypatch, raw)
+
+    assert seen["step"] == (8, "bodyFrame", "body")

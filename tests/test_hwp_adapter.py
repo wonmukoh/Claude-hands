@@ -205,3 +205,16 @@ def test_the_node_budget_stops_the_field_walk():
 def test_emitted_nodes_are_plain_node_info():
     nodes = walk(FakeHwp(fields={"성명": ""}))
     assert all(isinstance(n, NodeInfo) for n in nodes)
+
+
+def test_a_multi_line_field_is_written_with_crlf_and_read_back_with_lf():
+    # 한글 drops a bare \n in PutFieldText and answers GetFieldText with \r\n;
+    # type_text compares against what it was given, so both ends must agree.
+    app = FakeHwp(fields={"본문": ""})
+    field = [n for n in walk(app) if n.name == "본문" and n.role == "edit"][0]
+    pattern = field._element.pattern("value")
+
+    pattern.SetValue("첫 줄\n둘째 줄")
+
+    assert app.writes == [("본문", "첫 줄\r\n둘째 줄")]
+    assert pattern.CurrentValue == "첫 줄\n둘째 줄"
