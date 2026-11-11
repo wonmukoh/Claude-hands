@@ -96,6 +96,19 @@ pip install -e .
 
 Windows 10/11 + Python 3.10 이상. 의존성은 `comtypes`(UIA), `pillow`(캡처), `mcp`(서버)뿐입니다.
 
+### Python 없이 쓰는 묶음
+
+받는 PC 에 Python·pip·인터넷이 없어도 되는 묶음을 구울 수 있습니다.
+
+```powershell
+powershell -ExecutionPolicy Bypass -File build.ps1     # → dist\claude-hands\ , dist\claude-hands-<판>.zip
+claude mcp add -s user claude-hands -- "<푼 폴더>\claude-hands\python\python.exe" -m claude_hands.server
+"<푼 폴더>\claude-hands\python\python.exe" -m claude_hands.cli doctor
+```
+
+python.org 의 임베드용 Python 과 PyPI 휠을 그대로 담습니다. 새로 만든 실행 파일이 없어서
+스마트 앱 컨트롤이 켜진 PC 에서도 막히지 않습니다.
+
 설치 후 환경 점검:
 
 ```bash

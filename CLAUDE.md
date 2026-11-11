@@ -24,36 +24,44 @@ Windows 프로그램을 **창 하나 단위로** 조작하는 도구. 데스크�
 `examples/verify_live.py` 는 매 동작 **직전에** 커서와 전경 창을 다시 읽어서, 그
 동작 중에 바뀌었으면 실패로 기록합니다. 이 검사를 약화시키지 마세요.
 
-## 이 저장소를 받아 가는 곳 — 푸시가 곧 배포다
+## 이 저장소를 받아 가는 곳 — 레지스트리 없는 묶음 (2026-11-11)
 
-MAGISTER(`projects\MAGISTER`) 의 '윈도우 창 제어' 모듈이 선생님들 PC 에 이 도구를
-설치합니다 (`MagisterOfficiorum.ps1`, 2026-09-23 확인).
+사용자가 정했습니다(2026-11-11 「모든 MCP가 다 그랬으면 좋겠음」): 받는 PC 는 GitHub·PyPI 에서
+아무것도 받지 않습니다. `build.ps1` 이 굽는 묶음을 MAGISTER 가 자기 zip 의 `tools\` 에 담아
+보냅니다.
 
 ```
-pip install --upgrade "git+https://github.com/wonmukoh/Claude-hands"
-→ claude-hands-mcp.exe 를 site 경로에서 찾아 mcpServers 에 'claude-hands' 로 등록
-→ claude-hands.exe doctor 로 자체 진단
+powershell -ExecutionPolicy Bypass -File build.ps1
+→ dist\claude-hands\python\python.exe            python.org 임베드용 (PSF 서명)
+  dist\claude-hands\python\Lib\site-packages\   이 저장소 + 의존 꾸러미 휠 (그 Python 판에 맞춘 것)
+  dist\claude-hands-<판>.zip
+→ packaging\smoke.py 가 빈 임시 폴더에서 PATH·PYTHON* 없이 띄워 점검 (12가지)
 ```
 
-브랜치를 지정하지 않으므로 **기본 브랜치에 푸시한 것이 다음 설치부터 선생님들에게
-갑니다.** 그리고 아래 셋 중 하나가 바뀌면 이 PC 에서는 멀쩡하고 선생님들 PC 에서만
-조용히 깨집니다 — 이 PC 에는 이미 깔려 있어서 티가 안 납니다.
+받는 PC 에서:
 
-| 무엇 | 지금 | 바뀌면 |
-|---|---|---|
-| 저장소 공개 여부 | 공개 (익명 HTTP 200) | 비공개면 pip 가 실패 |
-| 기본 브랜치 | `claude/windows-program-click-tool-ja9jsw` | 다른 내용의 브랜치로 기본을 바꾸면 그게 설치됨 |
-| 콘솔 스크립트 | `claude-hands-mcp`, `claude-hands` | exe 를 못 찾아 등록 실패 |
+```
+등록   claude mcp add -s user claude-hands -- "<폴더>\python\python.exe" -m claude_hands.server
+진단   "<폴더>\python\python.exe" -m claude_hands.cli doctor
+스크립트(기안 스킬 fill_draft.py 등)   "<폴더>\python\python.exe" fill_draft.py …
+```
 
-**push 할 때는 버전을 올리세요** (`pyproject.toml` 과 `__init__.__version__`).
-버전이 같으면 `pip install --upgrade "git+…"` 가 「이미 만족」으로 보고 **이미 설치된
-PC 는 옛 커밋 그대로 둡니다** — 실측: 52a7a56 이 깔린 venv 에 같은 명령을 돌려도
-52a7a56 그대로였고, 버전만 0.2.0 으로 올리자 바뀌었습니다(2026-10-27). 새로 설치하는
-PC 만 새 코드를 받으니, 이 PC 에서는 티가 안 납니다.
+- **`claude-hands-mcp.exe` 는 더 없습니다.** PyInstaller 로 구운 exe 는 스마트 앱 컨트롤에
+  막혔습니다(교훈 40). 등록 이름 `claude-hands` 와 도구·계약은 그대로입니다.
+- 묶음의 Python 은 `._pth` 때문에 격리 모드로 돌아 그 PC 의 다른 Python·PYTHONPATH 를 보지
+  않습니다. 그래서 **바깥 Python 에서 `import claude_hands` 는 안 됩니다.** claude_hands 를 쓰는
+  스크립트는 묶음의 python.exe 로 돌립니다.
+- 처음 뜰 때 아무것도 쓰지 않습니다(UIA 래퍼·.pyc 를 미리 구움). 쓰기 금지 폴더에 풀어도 됩니다.
+- 굽는 PC 는 인터넷이 필요합니다(임베드 zip 과 휠). 같은 Python 판으로 다시 구우면 `build\` 에 받아 둔 임베드 zip 을 씁니다.
 
-이 셋을 바꿔야 하면 **먼저 MAGISTER 세션에 알리세요.** 그쪽이 모듈을 맞추고 새
-배포본을 올립니다. `doctor` 출력 형식이나 종료 코드를 바꿀 때도 마찬가지입니다 —
+**판을 바꾸면 버전을 올리세요** (`pyproject.toml` 과 `__init__.__version__`). zip 이름과
+`claude_hands.__version__` 이 그 번호를 씁니다. 묶음을 넘기는 일은 총괄 → MAGISTER 순서입니다
+(`00 프로젝트 세션\CLAUDE.md`). `doctor` 출력 형식이나 종료 코드를 바꿀 때도 알리세요 —
 MAGISTER 는 비정상 종료를 경고로 기록합니다.
+
+옛 방식(`pip install "git+https://github.com/wonmukoh/Claude-hands"`)도 저장소가 공개이고
+기본 브랜치가 `claude/windows-program-click-tool-ja9jsw` 인 동안은 그대로 됩니다. 그 경우
+판이 같으면 `--upgrade` 가 「이미 만족」으로 보고 옛 커밋을 둡니다(2026-10-27 실측).
 
 ## 구조
 
@@ -78,6 +86,8 @@ src/claude_hands/
   api.py             파이썬 파사드
   server.py          MCP 서버 (도구 16개)
   cli.py             명령줄
+build.ps1            레지스트리 없는 묶음 굽기 (임베드 Python + 휠)
+packaging/smoke.py   구운 묶음을 빈 폴더에서 MCP 로 띄워 점검
 ```
 
 **엔진이 넷입니다.**
@@ -798,6 +808,25 @@ Explorer_Server`)을 **0x0 으로 줄입니다.** 페이지는 제 크기(1904x9
   순간 문서가 나갑니다. 체크칸이라 `CHOOSING_ROLES` 로 거절을 빠져나갔습니다. 이제
   `USER_ONLY_IDS` 의 id 는 역할보다 **먼저** 거절합니다. 「결재」라는 이름의 다른
   체크칸·목록 항목은 그대로 고를 수 있습니다.
+
+### 40. 새로 구운 exe 는 스마트 앱 컨트롤에 막힙니다
+
+2026-11-11 레지스트리 없는 판을 PyInstaller 단일 exe 로 먼저 구웠습니다. 굽기는 됐지만
+실행하자마자 「애플리케이션 제어 정책에서 이 파일을 차단했습니다」(WinError 4551) 였습니다.
+CodeIntegrity 로그 3033·3077, 정책 `{0283ac0f-fff1-49ae-ada1-8a933130cad6}` — 이 PC 는
+스마트 앱 컨트롤이 켜져 있습니다(`SmartAppControlState: On`). 서명도 평판도 없는 새 실행
+파일은 막습니다. 굽을 때마다 해시가 바뀌니 평판이 쌓일 틈도 없습니다. 같은 날 다른 세션이
+구운 `KakaoPcMCP.exe` 도 같은 기록으로 막혔습니다. 새로 산 Windows 11 은 이 기능이 켜진
+채로 오기도 하니, 선생님 PC 에서도 일어날 수 있는 일입니다.
+
+pip 로 깐 판이 이 PC 에서 도는 이유와 같은 길로 갔습니다. 묶음 안의 실행 파일은 전부 이미
+평판이 있는 것뿐입니다 — python.org 가 서명한 `python.exe`·`python3xx.dll`, PyPI 휠 그대로의
+`.pyd`·`.dll`. 우리가 더하는 것은 `.py` 뿐입니다. 이렇게 구운 묶음은 같은 PC 에서 막히지
+않았고 점검 12/12 를 통과했습니다.
+
+- exe 가 꼭 필요해지면 코드 서명 인증서가 있어야 합니다(비용 — 사용자가 정할 일).
+- `.ps1` 은 **UTF-8 BOM** 으로 저장하세요. Windows PowerShell 5.1 은 BOM 없는 파일을 cp949 로
+  읽어 한글 주석이 다음 줄을 먹고, 변수 대입이 사라져 엉뚱한 곳에서 실패합니다.
 
 ## 지금까지 검증된 것
 
