@@ -27,6 +27,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import tomllib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -36,6 +37,8 @@ TOOLS = {
     "call_control_method", "menu_select", "wait_for_element", "control_window",
 }
 user32 = ctypes.windll.user32
+with open(ROOT / "pyproject.toml", "rb") as _f:
+    VERSION = tomllib.load(_f)["project"]["version"]
 
 
 def clean_env(home: Path) -> dict:
@@ -121,8 +124,10 @@ def main() -> int:
         try:
             init = server.send("initialize", {"protocolVersion": "2025-06-18", "capabilities": {},
                                               "clientInfo": {"name": "smoke", "version": "1"}})
-            check("initialize", init["result"]["serverInfo"]["name"] == "claude-hands",
-                  f"({time.monotonic() - started:.1f}초)")
+            info = init["result"]["serverInfo"]
+            check("initialize", info["name"] == "claude-hands", f"({time.monotonic() - started:.1f}초)")
+            # MAGISTER reads this to tell which claude-hands a PC has.
+            check("판 번호", info.get("version") == VERSION, f"{info.get('version')!r}")
             server.send("notifications/initialized", notify=True)
             names = {t["name"] for t in server.send("tools/list")["result"]["tools"]}
             check("도구 16개", names == TOOLS, f"{len(names)}개")

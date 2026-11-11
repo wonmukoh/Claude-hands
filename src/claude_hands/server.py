@@ -14,7 +14,7 @@ import os
 import sys
 from typing import Any, Literal, Optional
 
-from . import actions as _actions
+from . import __version__, actions as _actions
 from .api import manager, windows as _list_windows
 from .elements import format_node_line
 from .session import SnapshotOptions, WindowSession
@@ -82,6 +82,26 @@ mcp = _Server(
         + (READ_ONLY_NOTICE if READ_ONLY else "")
     ),
 )
+
+
+def _advertise_version(server, version: str) -> None:
+    """Put this package's version in the initialize reply's ``serverInfo``.
+
+    Nothing set it, so it went out empty with mcp 2.x (``MCPServer`` defaults
+    ``version`` to "") and as the SDK's own version with 1.x — MAGISTER read
+    the empty one when checking which claude-hands a PC had (2026-11-11). 1.x's
+    FastMCP takes no ``version`` argument, so the low-level server under
+    either is set directly; both read it when they build the reply.
+    """
+
+    for name in ("_lowlevel_server", "_mcp_server"):
+        low = getattr(server, name, None)
+        if low is not None and hasattr(low, "version"):
+            low.version = version
+            return
+
+
+_advertise_version(mcp, __version__)
 
 
 def _guard_write() -> None:

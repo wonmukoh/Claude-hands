@@ -35,7 +35,7 @@ powershell -ExecutionPolicy Bypass -File build.ps1
 → dist\claude-hands\python\python.exe            python.org 임베드용 (PSF 서명)
   dist\claude-hands\python\Lib\site-packages\   이 저장소 + 의존 꾸러미 휠 (그 Python 판에 맞춘 것)
   dist\claude-hands-<판>.zip
-→ packaging\smoke.py 가 빈 임시 폴더에서 PATH·PYTHON* 없이 띄워 점검 (12가지)
+→ packaging\smoke.py 가 빈 임시 폴더에서 PATH·PYTHON* 없이 띄워 점검 (13가지, 판 번호 포함)
 ```
 
 받는 PC 에서:

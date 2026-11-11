@@ -115,3 +115,21 @@ def test_a_field_list_is_shown_split_not_as_control_characters():
 
 def test_the_instructions_say_who_presses_send():
     assert "결재올림" in server.mcp.instructions
+
+
+def test_initialize_reports_this_packages_version():
+    # MAGISTER reads serverInfo.version to tell which claude-hands a PC has;
+    # it went out empty (mcp 2.x) before this was set.
+    import json
+    import subprocess
+    import sys
+
+    import claude_hands
+
+    hello = {"jsonrpc": "2.0", "id": 1, "method": "initialize",
+             "params": {"protocolVersion": "2025-06-18", "capabilities": {},
+                        "clientInfo": {"name": "test", "version": "1"}}}
+    out = subprocess.run([sys.executable, "-m", "claude_hands.server"],
+                         input=(json.dumps(hello) + "\n").encode(), capture_output=True, timeout=60)
+    info = json.loads(out.stdout.decode("utf-8").splitlines()[0])["result"]["serverInfo"]
+    assert info == {"name": "claude-hands", "version": claude_hands.__version__}
