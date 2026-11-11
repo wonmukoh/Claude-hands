@@ -33,6 +33,7 @@ from .windows import (
     is_minimized,
     minimize,
     move_window,
+    on_any_monitor,
     send_to_bottom,
     set_placement,
     show_without_activating,
@@ -228,6 +229,25 @@ def capture_window(
         return _capture(hwnd, restore_if_minimized=restore_if_minimized, settle_seconds=settle_seconds)
 
 
+def _keeps_its_place(restored_rect) -> bool:
+    """Whether SetWindowPlacement will leave this window where it was.
+
+    It will not if the window sits wholly outside every monitor: Windows then
+    moves its restored position onto one. Measured 2026-11-11 — a window parked
+    at (9000, 9000) came back at (1460, 772) after a minimised capture, on the
+    user's screen; windows inside or partly on a monitor stayed put. Such a
+    window is minimised again as it stands instead: ShowWindow keeps the
+    position it was just restored to, which is the one it had.
+    """
+
+    if restored_rect is None:
+        return True
+    try:
+        return on_any_monitor(restored_rect)
+    except Exception:  # noqa: BLE001 - when in doubt, the path that was always taken
+        return True
+
+
 _capture_locks: dict[int, threading.Lock] = {}
 _capture_locks_guard = threading.Lock()
 
@@ -310,9 +330,10 @@ def _capture(hwnd: int, *, restore_if_minimized: bool, settle_seconds: float) ->
                 move_window(hwnd, restored_rect.left, restored_rect.top)
             except ClaudeHandsError:
                 pass
-        try:
-            set_placement(hwnd, placement)
-        except ClaudeHandsError:
-            pass
+        if _keeps_its_place(restored_rect):
+            try:
+                set_placement(hwnd, placement)
+            except ClaudeHandsError:
+                pass
         if not is_minimized(hwnd):
             minimize(hwnd)

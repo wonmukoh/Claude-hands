@@ -107,9 +107,16 @@ class WindowSession:
         header = self._header()
         if options.interactive_only:
             nodes = flatten_interactive(tree)
+            # max_lines applies here too; only the tree view used to honour it.
+            shown = nodes[: max(options.max_lines, 0)]
             body = "\n".join(
-                format_node_line(node, show_rect=options.show_rect) for node in nodes
+                format_node_line(node, show_rect=options.show_rect) for node in shown
             )
+            if len(nodes) > len(shown):
+                body += (
+                    f"\n… 출력 한도({options.max_lines}줄)를 넘어 조작 가능한 요소 "
+                    f"{len(nodes) - len(shown)}개를 생략했습니다. find_elements 로 좁혀 찾으세요."
+                )
             if not body:
                 body = "(조작 가능한 요소를 찾지 못했습니다. interactive_only=False 로 전체 트리를 보세요.)"
         else:

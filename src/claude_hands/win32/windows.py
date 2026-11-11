@@ -526,6 +526,18 @@ def virtual_screen_rect() -> Rect:
     return Rect(x, y, x + w, y + h)
 
 
+def on_any_monitor(rect: Rect) -> bool:
+    """Whether any part of ``rect`` lies on a monitor."""
+
+    require_windows()
+    from .defs import RECT, user32
+
+    user32.MonitorFromRect.restype = ctypes.c_void_p
+    user32.MonitorFromRect.argtypes = [ctypes.POINTER(RECT), ctypes.c_uint]
+    raw = RECT(rect.left, rect.top, rect.right, rect.bottom)
+    return bool(user32.MonitorFromRect(ctypes.byref(raw), 0))  # MONITOR_DEFAULTTONULL
+
+
 def get_placement(hwnd: int):
     require_windows()
     from .defs import WINDOWPLACEMENT, user32

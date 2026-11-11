@@ -153,3 +153,23 @@ def test_window_info_state_reporting():
     info.maximized = False
     info.visible = False
     assert info.state == "hidden"
+
+
+def test_the_flat_list_honours_max_lines_and_says_what_it_left_out(monkeypatch):
+    # Found live 2026-11-11: interactive_only with max_lines=12 returned 90 lines.
+    from claude_hands.session import SnapshotOptions
+
+    buttons = [NodeInfo(role="button", name=f"단추 {i}", patterns=("invoke",)) for i in range(5)]
+    root = NodeInfo(role="window", name="테스트 창", children=buttons)
+    assign_refs(root)
+    session = make_session()
+    monkeypatch.setattr(session, "capture_tree", lambda options=None: root)
+    monkeypatch.setattr(session, "_header", lambda: "머리글")
+
+    text = session.render(SnapshotOptions(interactive_only=True, max_lines=2))
+
+    assert text.count("button") == 2
+    assert "3개를 생략" in text
+
+    everything = session.render(SnapshotOptions(interactive_only=True, max_lines=50))
+    assert everything.count("button") == 5 and "생략" not in everything

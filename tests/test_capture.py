@@ -72,3 +72,40 @@ def test_blank_ratio_detects_printwindow_returning_black():
     assert _blank_ratio(coloured) == 0.0
 
     assert _blank_ratio(b"") == 1.0
+
+
+# --------------------------------------------------------------------------
+# Putting a minimised window back after a capture
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("on_monitor, placement_restored", [(True, True), (False, False)])
+def test_a_window_off_every_monitor_is_not_put_back_through_its_placement(
+    monkeypatch, on_monitor, placement_restored
+):
+    # Found live 2026-11-11: SetWindowPlacement moves a window that sits wholly
+    # outside every monitor onto one — a window parked at (9000, 9000) came
+    # back on the user's screen after a minimised capture.
+    from claude_hands.win32 import capture as cap
+
+    state = {"minimized": True}
+    calls = []
+    where = Rect(9000, 9000, 9460, 9260)
+    monkeypatch.setattr(cap, "is_minimized", lambda hwnd: state["minimized"])
+    monkeypatch.setattr(cap, "get_placement", lambda hwnd: "placement")
+    monkeypatch.setattr(cap, "show_without_activating", lambda hwnd: state.update(minimized=False))
+    monkeypatch.setattr(cap, "send_to_bottom", lambda hwnd: None)
+    monkeypatch.setattr(cap, "window_rect", lambda hwnd, **kw: where)
+    monkeypatch.setattr(cap, "_grab_best", lambda hwnd, rect: (bytes([1, 2, 3, 255]) * 4, False))
+    monkeypatch.setattr(cap, "_blank_ratio", lambda pixels: 0.0)
+    monkeypatch.setattr(cap, "on_any_monitor", lambda rect: on_monitor)
+    monkeypatch.setattr(cap, "set_placement",
+                        lambda hwnd, placement: (calls.append("set_placement"), state.update(minimized=True)))
+    monkeypatch.setattr(cap, "minimize", lambda hwnd: (calls.append("minimize"), state.update(minimized=True)))
+
+    cap._capture(1, restore_if_minimized=True, settle_seconds=0)
+
+    assert ("set_placement" in calls) is placement_restored
+    assert state["minimized"]  # either way it ends minimised again
+    if not on_monitor:
+        assert calls == ["minimize"]
