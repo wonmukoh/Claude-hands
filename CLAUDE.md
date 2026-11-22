@@ -74,6 +74,7 @@ src/claude_hands/
   win32/controls.py  창 메시지 폴백 엔진 (HWND 컨트롤 → 패턴 프로토콜)
   win32/menus.py     실제 메뉴바 읽기 · WM_COMMAND 실행
   win32/lists.py     목록 상자 · 콤보 · 트리 · 리스트뷰를 자기 메시지로 고르기 (교훈 38)
+  win32/desktop.py   다른 데스크톱(샌드박스)에서 떠도 스레드를 Default 로 옮기기 (교훈 42)
   uia/core.py        COM 워커 스레드 · 요소 래퍼 · 캐시 트리 구축
   office/core.py     Office 문서 모델 엔진 (PowerPoint · Word · Excel)
   office/hwp.py      한글 어댑터 (ROT 로 붙음 · 누름틀)
@@ -112,7 +113,7 @@ packaging/smoke.py   구운 묶음을 빈 폴더에서 MCP 로 띄워 점검
 ## 검증하는 법
 
 ```bash
-pytest -q                                    # 422개
+pytest -q                                    # 433개
 
 # 남의 파일에 쓰지 않기 위한 전용 대상 창 (입력란·체크박스·대화상자 버튼)
 python examples/target_app.py
@@ -852,6 +853,31 @@ pip 로 깐 판이 이 PC 에서 도는 이유와 같은 길로 갔습니다. �
   바뀌었는지를 봐야 합니다.
 - 시험 창을 화면 밖에 두고 재면 사용자를 덜 방해하지만, 위 첫 항목처럼 **화면 밖이라서만
   생기는 일**이 있습니다. 둘 다 재세요.
+
+### 42. 다른 데스크톱(샌드박스)에서 뜨면 창이 0개입니다 (2026-11-22, 0.2.5)
+
+Antigravity 셸은 프로세스를 같은 창 스테이션(WinSta0)의 다른 데스크톱(`exebox-…`)에 둡니다.
+사용자 창은 `Default` 에 있습니다. 그 데스크톱의 스레드에서는 `EnumWindows` 가 아무것도 못
+찾고(반환 FALSE, 오류 0), UIA 루트의 자식이 0개, `Default` 창의 `GetWindowRect` 가 실패합니다.
+도구는 오류 없이 「조건에 맞는 창이 없습니다」라고만 했습니다. kakao-pc 담당이 같은 일을
+0.5.2 에서 고치며 찾았습니다.
+
+재현: `python examples/verify_other_desktop.py`. 시험 데스크톱을 만들어 `CreateProcess` 의
+`lpDesktop` 으로 자기 자신을 띄우고, 거기서 날 `EnumWindows`·`api.windows()`·UIA 루트·캡처·
+MCP `list_windows` 를 재서 JSON 으로 보입니다. 고치기 전 넷 다 0·실패, 고친 뒤 사용자 창이
+보였습니다(WMBOOK: 창 6개, UIA 루트 자식 7개, 캡처 2880×1800).
+
+`win32/desktop.py` 가 스레드를 `Default` 로 옮깁니다. **`SetThreadDesktop` 은 부른 스레드에만
+먹으므로** 들머리마다 부릅니다.
+
+- `server._run` — 도구 호출이 도는 asyncio 풀 스레드.
+- `UiaWorker._run` — UIA MTA·STA 일꾼. **COM 보다 먼저.** STA 는 숨은 창을 만들고, 창이나 훅을 가진
+  스레드는 옮길 수 없습니다(ERROR_BUSY 170).
+- `require_windows()` — 모든 Win32 들머리가 부르므로 스크립트·CLI 의 스레드도 여기서 옮겨집니다.
+
+스레드마다 한 번만 보고 기억합니다. 이미 `Default` 면 손대지 않습니다. `OpenDesktop` 권한은
+읽기·열거(0x41)만, 핸들은 프로세스에 하나 열고 닫지 않습니다. 실패는 `doctor` 의 「데스크톱」 줄과
+빈 `list_windows` 답에 이유로 나옵니다. kakao-pc 코드를 가져다 쓰지 않고 이 저장소에 따로 둡니다.
 
 ## 지금까지 검증된 것
 

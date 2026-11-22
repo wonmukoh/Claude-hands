@@ -192,6 +192,13 @@ def cmd_doctor(_args) -> int:
 
     print(f"  DPI 인식        : {DPI_AWARENESS} (패키지 임포트 시점에 설정됨)")
 
+    from .win32.desktop import desktop_state, describe_desktop, ensure_default_desktop
+
+    ensure_default_desktop()
+    print(f"  데스크톱        : {describe_desktop()}")
+    if "failure" in desktop_state():
+        ok = False
+
     try:
         import comtypes  # noqa: F401
 

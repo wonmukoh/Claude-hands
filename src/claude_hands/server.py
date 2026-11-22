@@ -20,6 +20,7 @@ from .elements import format_node_line
 from .session import SnapshotOptions, WindowSession
 from .win32.capture import capture_window
 from .win32.defs import IS_WINDOWS, ClaudeHandsError, force_utf8_output
+from .win32.desktop import ensure_default_desktop, failure_notice
 from .win32.windows import (
     close_window,
     describe_window,
@@ -111,10 +112,23 @@ def _guard_write() -> None:
         )
 
 
-async def _run(func, *args, **kwargs):
-    """Run blocking Win32/UIA work off the event loop."""
+def _on_user_desktop(func, *args, **kwargs):
+    """Call ``func`` after putting this worker thread on the user's desktop.
 
-    return await asyncio.to_thread(func, *args, **kwargs)
+    asyncio hands the work to pool threads; a pool thread of a process started
+    on another desktop (a sandbox) sees no windows until it is moved, and the
+    move only applies to the thread that makes it (``win32/desktop.py``).
+    """
+
+    if IS_WINDOWS:
+        ensure_default_desktop()
+    return func(*args, **kwargs)
+
+
+async def _run(func, *args, **kwargs):
+    """Run blocking Win32/UIA work off the event loop, on the user's desktop."""
+
+    return await asyncio.to_thread(_on_user_desktop, func, *args, **kwargs)
 
 
 def _session(hwnd: Optional[int] = None) -> WindowSession:
@@ -194,8 +208,11 @@ async def list_windows(
         return _fail(exc)
     if not found:
         if wait_seconds:
-            return f"{wait_seconds:g}초 동안 기다렸지만 조건에 맞는 창이 나타나지 않았습니다."
-        return "조건에 맞는 창이 없습니다."
+            return (
+                f"{wait_seconds:g}초 동안 기다렸지만 조건에 맞는 창이 나타나지 않았습니다."
+                + failure_notice()
+            )
+        return "조건에 맞는 창이 없습니다." + failure_notice()
     lines = [f"창 {len(found)}개:"]
     lines += [f"  {info.describe()}" for info in found]
     lines.append("\nattach_window(hwnd=...) 로 조작할 창을 지정하세요.")

@@ -166,6 +166,12 @@ class UiaWorker:
             raise UiaUnavailableError(str(self._error))
 
     def _run(self) -> None:  # pragma: no cover - Windows only
+        # First, before COM: an STA's hidden window would pin this thread to
+        # whatever desktop it started on, and SetThreadDesktop then refuses.
+        # A UIA thread off the user's desktop sees a root with no children.
+        from ..win32.desktop import ensure_default_desktop
+
+        ensure_default_desktop()
         try:
             if self._wanted == "sta":
                 # Not through comtypes: importing it here for the first time

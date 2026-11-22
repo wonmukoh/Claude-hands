@@ -440,10 +440,19 @@ else:  # pragma: no cover - placeholder names so imports never explode
 
 
 def require_windows() -> None:
-    """Raise :class:`NotOnWindowsError` when not running on Windows."""
+    """Raise :class:`NotOnWindowsError` when not running on Windows.
+
+    Every Win32 entry point calls this, so it is also where a thread that a
+    script or the CLI uses gets moved onto the user's desktop when this process
+    was started on another one (``desktop.py``). Once per thread; a thread
+    already on ``Default`` is left alone.
+    """
 
     if not IS_WINDOWS:
         raise NotOnWindowsError()
+    from .desktop import ensure_default_desktop
+
+    ensure_default_desktop()
 
 
 def enable_dpi_awareness() -> str:
