@@ -133,3 +133,77 @@ def test_initialize_reports_this_packages_version():
                          input=(json.dumps(hello) + "\n").encode(), capture_output=True, timeout=60)
     info = json.loads(out.stdout.decode("utf-8").splitlines()[0])["result"]["serverInfo"]
     assert info == {"name": "claude-hands", "version": claude_hands.__version__}
+
+
+# -- what tools/list and every answer cost (2026-11-25) ----------------------
+
+
+def _listed():
+    import asyncio
+
+    return {t.name: t.model_dump(mode="json", by_alias=True, exclude_none=True)
+            for t in asyncio.run(server.mcp.list_tools())}
+
+
+def test_answers_are_sent_once_not_also_as_structured_content():
+    # The SDK's default wrapped every str answer in {"result": ...} and sent it
+    # beside the text: each answer went out twice and each tool listed an
+    # output schema nobody reads.
+    import asyncio
+
+    for name, tool in _listed().items():
+        assert "outputSchema" not in tool, name
+    result = asyncio.run(server.mcp.call_tool("detach_window", {}))
+    assert getattr(result, "structured_content", None) is None
+    assert result.content and result.content[0].text
+
+
+def test_listed_schemas_carry_no_titles_or_null_unions():
+    import json
+
+    for name, tool in _listed().items():
+        text = json.dumps(tool["inputSchema"], ensure_ascii=False)
+        assert '"title": "' not in text.replace('"title": {', ""), name
+    snapshot = _listed()["snapshot"]["inputSchema"]["properties"]
+    assert snapshot["hwnd"] == {"type": "integer"}
+    assert snapshot["depth"] == {"default": 12, "type": "integer"}
+
+
+def test_an_argument_called_title_survives_compaction():
+    properties = _listed()["attach_window"]["inputSchema"]["properties"]
+    assert properties["title"] == {"type": "string"}
+    assert set(properties) == {"hwnd", "title", "process", "pid", "engine"}
+
+
+def test_a_null_the_control_receives_is_still_advertised():
+    items = _listed()["call_control_method"]["inputSchema"]["properties"]["args"]["items"]
+    assert {"type": "null"} in items["anyOf"]
+
+
+def test_a_caller_may_still_send_null_for_a_left_out_argument():
+    # Only the advertised schema was compacted; calls are validated against
+    # the function's own arguments, which still take None.
+    import asyncio
+
+    result = asyncio.run(server.mcp.call_tool("detach_window", {"hwnd": None}))
+    assert not result.is_error, result
+
+
+def test_compaction_keeps_every_other_key():
+    schema = {"type": "object", "title": "X", "properties": {
+        "a": {"anyOf": [{"type": "string"}, {"type": "null"}], "default": None, "title": "A"},
+        "b": {"anyOf": [{"type": "string"}, {"type": "integer"}, {"type": "null"}], "default": None},
+        "c": {"type": "integer", "default": 3, "title": "C"},
+    }, "required": ["c"]}
+    assert server._compact_schema(schema) == {"type": "object", "properties": {
+        "a": {"type": "string"},
+        "b": {"anyOf": [{"type": "string"}, {"type": "integer"}]},
+        "c": {"type": "integer", "default": 3},
+    }, "required": ["c"]}
+
+
+def test_the_safety_sentences_are_still_there():
+    listed = _listed()
+    assert "결재올림" in listed["click_element"]["description"]
+    assert "사용자가 직접" in listed["click_element"]["description"]
+    assert "allow_focus" in listed["type_text"]["description"]
